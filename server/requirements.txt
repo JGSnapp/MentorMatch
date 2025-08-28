@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+psycopg2-binary
+python-dotenv
+gspread
+google-auth
+Jinja2
+openai
+python-telegram-bot==20.7

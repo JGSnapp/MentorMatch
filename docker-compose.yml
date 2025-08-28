@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  server:
+      build: ./server
+      ports:
+        - "8000:8000"
+      environment:
+        - PROXY_API_KEY=${PROXY_API_KEY}
+        - PROXY_BASE_URL=${PROXY_BASE_URL}
+      volumes:
+        - ./server:/app
+      restart: unless-stopped 
+
+  postgres:
+    image: postgres:16
+    container_name: mentormatch-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: mentormatch-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "${PGADMIN_PORT:-8080}:80"
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
