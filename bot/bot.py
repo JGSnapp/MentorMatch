@@ -561,14 +561,14 @@ class MentorMatchBot:
         query = update.callback_query
         
         text = (
-            "📊 **Импорт из Google Sheets**\n\n"
+            "📊 Импорт из Google Sheets\n\n"
             "Для импорта данных используйте веб-интерфейс:\n"
             "🌐 http://localhost:8000\n\n"
-            "**Что импортируется:**\n"
+            "Что импортируется:\n"
             "• Студенты с профилями\n"
             "• Темы исследований\n"
             "• Навыки и интересы\n\n"
-            "**Настройка:**\n"
+            "Настройка:\n"
             "1. Добавьте в .env:\n"
             "   - SPREADSHEET_ID\n"
             "   - SERVICE_ACCOUNT_FILE\n"
@@ -579,7 +579,7 @@ class MentorMatchBot:
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def view_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает список студентов"""
@@ -591,11 +591,11 @@ class MentorMatchBot:
             await query.edit_message_text("👥 Студенты не найдены.")
             return
         
-        text = "👥 **Список студентов:**\n\n"
+        text = "👥 Список студентов:\n\n"
         keyboard = []
         
         for student in students_data:
-            text += f"**{student.get('full_name', 'Без имени')}**\n"
+            text += f"{student.get('full_name', 'Без имени')}\n"
             if student.get('program'):
                 text += f"📚 Программа: {student.get('program')}\n"
             if student.get('skills'):
@@ -614,7 +614,7 @@ class MentorMatchBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def view_supervisors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает список научных руководителей"""
@@ -626,11 +626,11 @@ class MentorMatchBot:
             await query.edit_message_text("👨‍🏫 Научные руководители не найдены.")
             return
         
-        text = "👨‍🏫 **Список научных руководителей:**\n\n"
+        text = "👨‍🏫 Список научных руководителей:\n\n"
         keyboard = []
         
         for supervisor in supervisors_data:
-            text += f"**{supervisor.get('full_name', 'Без имени')}**\n"
+            text += f"{supervisor.get('full_name', 'Без имени')}\n"
             if supervisor.get('position'):
                 text += f"🏢 Должность: {supervisor.get('position')}\n"
             if supervisor.get('degree'):
@@ -651,7 +651,7 @@ class MentorMatchBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def view_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает список тем"""
@@ -663,12 +663,12 @@ class MentorMatchBot:
             await query.edit_message_text("📝 Темы не найдены.")
             return
         
-        text = "📝 **Список тем:**\n\n"
+        text = "📝 Список тем:\n\n"
         keyboard = []
         
         for topic in topics_data:
             role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
-            text += f"**{topic.get('title', 'Без названия')}**\n"
+            text += f"{topic.get('title', 'Без названия')}\n"
             text += f"👤 Автор: {topic.get('author', 'Неизвестно')}\n"
             text += f"👥 Ищем: {role_text}\n"
             text += f"📅 ID: {topic.get('id')}\n\n"
@@ -683,7 +683,7 @@ class MentorMatchBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await query.edit_message_text(text, reply_markup=reply_markup)
     
     def run(self):
         """Запускает бота"""
