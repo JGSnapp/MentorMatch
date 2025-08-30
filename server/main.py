@@ -163,12 +163,38 @@ def api_get_sheets_status():
             "missing_vars": missing_vars
         }
 
+@app.get('/api/sheets-config', response_class=JSONResponse)
+def api_get_sheets_config():
+    """API для получения полной конфигурации Google Sheets (для импорта)"""
+    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    service_account_file = os.getenv('SERVICE_ACCOUNT_FILE')
+    
+    if spreadsheet_id and service_account_file:
+        return {
+            "status": "configured",
+            "spreadsheet_id": spreadsheet_id,  # Полный ID без обрезки
+            "service_account_file": service_account_file
+        }
+    else:
+        return {
+            "status": "not_configured",
+            "error": "Переменные окружения не настроены"
+        }
+
 @app.post('/api/import-sheet', response_class=JSONResponse)
 def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
     """API для импорта данных из Google Sheets"""
     try:
+        print(f"DEBUG: Начинаем импорт из spreadsheet_id={spreadsheet_id}, sheet_name={sheet_name}")
+        
         service_account_file = os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json')
+        print(f"DEBUG: Используем service_account_file={service_account_file}")
+        
         rows = fetch_normalized_rows(spreadsheet_id=spreadsheet_id, sheet_name=sheet_name, service_account_file=service_account_file)
+        print(f"DEBUG: Получено строк из Google Sheets: {len(rows) if rows else 0}")
+        
+        if rows:
+            print(f"DEBUG: Первая строка: {rows[0] if rows else 'None'}")
         
         inserted_users = 0
         upserted_profiles = 0

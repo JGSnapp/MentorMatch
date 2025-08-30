@@ -202,6 +202,10 @@ class MentorMatchBot:
             await self.find_candidates(update, context)
         elif query.data == "do_import_sheet":
             await self.do_import_sheet(update, context)
+        elif query.data == "add_topic":
+            await self.add_topic_start(update, context)
+        elif query.data == "add_supervisor":
+            await self.add_supervisor_start(update, context)
         else:
             await query.edit_message_text("❌ Неизвестное действие")
     
@@ -642,9 +646,20 @@ class MentorMatchBot:
                 )
                 return
             
+            # Получаем полную конфигурацию Google Sheets для импорта
+            config_data = await self.api_request('GET', '/api/sheets-config')
+            if not config_data or config_data.get('status') != 'configured':
+                await query.edit_message_text(
+                    "❌ Ошибка: конфигурация Google Sheets не найдена",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
+                    ]])
+                )
+                return
+            
             # Выполняем импорт через API
             import_result = await self.api_request('POST', '/api/import-sheet', {
-                'spreadsheet_id': status_data.get('spreadsheet_id', '').replace('...', ''),  # Убираем ... из ID
+                'spreadsheet_id': config_data.get('spreadsheet_id'),
                 'sheet_name': None  # Используем первый лист
             })
             
