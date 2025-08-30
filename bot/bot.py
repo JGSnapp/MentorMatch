@@ -198,6 +198,10 @@ class MentorMatchBot:
             await self.view_supervisors(update, context)
         elif query.data == "view_topics":
             await self.view_topics(update, context)
+        elif query.data == "find_candidates":
+            await self.find_candidates(update, context)
+        elif query.data == "do_import_sheet":
+            await self.do_import_sheet(update, context)
         else:
             await query.edit_message_text("❌ Неизвестное действие")
     
@@ -211,12 +215,12 @@ class MentorMatchBot:
             await query.edit_message_text("📝 Темы не найдены.")
             return
         
-        text = "📚 **Последние темы:**\n\n"
+        text = "📚 Последние темы:\n\n"
         keyboard = []
         
         for topic in topics_data[:10]:
             role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
-            text += f"• **{topic.get('title', 'Без названия')}**\n"
+            text += f"• {topic.get('title', 'Без названия')}\n"
             text += f"  👥 Ищем: {role_text}\n"
             text += f"  👤 Автор: {topic.get('author', 'Неизвестно')}\n\n"
             
@@ -230,7 +234,7 @@ class MentorMatchBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def show_topic_candidates(self, update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
         """Показывает кандидатов для темы"""
@@ -249,13 +253,13 @@ class MentorMatchBot:
         topic_title = match_data.get('topic_title', 'Неизвестная тема')
         items = match_data.get('items', [])
         
-        text = f"🔍 **Кандидаты для темы:**\n**{topic_title}**\n\n"
+        text = f"🔍 Кандидаты для темы:\n{topic_title}\n\n"
         
         if not items:
             text += "📝 Кандидаты не найдены."
         else:
             for item in items:
-                text += f"**{item.get('rank')}.** {item.get('full_name', 'Неизвестно')}\n"
+                text += f"{item.get('rank')}. {item.get('full_name', 'Неизвестно')}\n"
                 if item.get('reason'):
                     text += f"   💡 {item.get('reason')}\n"
                 text += "\n"
@@ -263,7 +267,7 @@ class MentorMatchBot:
         keyboard = [[InlineKeyboardButton("🔙 Назад к темам", callback_data="show_topics")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def add_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начинает процесс добавления темы"""
@@ -561,9 +565,8 @@ class MentorMatchBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            "🔍 **Выберите тему для поиска кандидатов:**\n\n"
+            "🔍 Выберите тему для поиска кандидатов:\n\n"
             "Нажмите на тему, чтобы увидеть подходящих кандидатов.",
-            parse_mode='Markdown',
             reply_markup=reply_markup
         )
     
@@ -571,33 +574,30 @@ class MentorMatchBot:
         """Показывает информацию об импорте из Google Sheets"""
         query = update.callback_query
         
-        # Проверяем наличие переменных окружения
-        spreadsheet_id = os.getenv('SPREADSHEET_ID')
-        service_account_file = os.getenv('SERVICE_ACCOUNT_FILE')
+        # Получаем статус через API сервера
+        status_data = await self.api_request('GET', '/api/sheets-status')
         
-        if spreadsheet_id and service_account_file:
-            # Переменные настроены - показываем информацию об импорте
+        if status_data and status_data.get('status') == 'configured':
+            # Переменные настроены - показываем кнопку импорта
             text = (
                 "📊 Импорт из Google Sheets\n\n"
                 "✅ Переменные окружения настроены:\n"
-                f"• SPREADSHEET_ID: {spreadsheet_id[:20]}...\n"
-                f"• SERVICE_ACCOUNT_FILE: {service_account_file}\n\n"
-                "Для импорта данных:\n"
-                "1. Откройте веб-интерфейс: http://localhost:8000\n"
-                "2. Введите ID таблицы (если отличается)\n"
-                "3. Нажмите 'Импортировать'\n\n"
+                f"• SPREADSHEET_ID: {status_data.get('spreadsheet_id', 'N/A')}\n"
+                f"• SERVICE_ACCOUNT_FILE: {status_data.get('service_account_file', 'N/A')}\n\n"
+                "Нажмите кнопку ниже для импорта данных из Google Sheets.\n\n"
                 "Что импортируется:\n"
                 "• Студенты с профилями\n"
                 "• Темы исследований\n"
                 "• Навыки и интересы"
             )
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Импортировать данные", callback_data="do_import_sheet")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+            ]
         else:
             # Переменные не настроены - показываем инструкции
-            missing_vars = []
-            if not spreadsheet_id:
-                missing_vars.append("SPREADSHEET_ID")
-            if not service_account_file:
-                missing_vars.append("SERVICE_ACCOUNT_FILE")
+            missing_vars = status_data.get('missing_vars', ['SPREADSHEET_ID', 'SERVICE_ACCOUNT_FILE']) if status_data else ['SPREADSHEET_ID', 'SERVICE_ACCOUNT_FILE']
             
             text = (
                 "📊 Импорт из Google Sheets\n\n"
@@ -609,15 +609,76 @@ class MentorMatchBot:
                 "Что импортируется:\n"
                 "• Студенты с профилями\n"
                 "• Темы исследований\n"
-                "• Навыки и интересы\n\n"
-                "После настройки используйте веб-интерфейс:\n"
-                "🌐 http://localhost:8000"
+                "• Навыки и интересы"
             )
+            
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
         
-        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await query.edit_message_text(text, reply_markup=reply_markup)
+    
+    async def do_import_sheet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выполняет импорт данных из Google Sheets"""
+        query = update.callback_query
+        
+        # Показываем сообщение о начале импорта
+        await query.edit_message_text(
+            "🔄 Импорт данных из Google Sheets...\n\n"
+            "⏳ Пожалуйста, подождите...",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
+            ]])
+        )
+        
+        try:
+            # Получаем SPREADSHEET_ID из переменных окружения сервера
+            status_data = await self.api_request('GET', '/api/sheets-status')
+            if not status_data or status_data.get('status') != 'configured':
+                await query.edit_message_text(
+                    "❌ Ошибка: переменные окружения не настроены",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
+            ]])
+                )
+                return
+            
+            # Выполняем импорт через API
+            import_result = await self.api_request('POST', '/api/import-sheet', {
+                'spreadsheet_id': status_data.get('spreadsheet_id', '').replace('...', ''),  # Убираем ... из ID
+                'sheet_name': None  # Используем первый лист
+            })
+            
+            if import_result and import_result.get('status') == 'success':
+                stats = import_result.get('stats', {})
+                message = (
+                    "✅ Импорт успешно завершен!\n\n"
+                    f"📊 Результаты:\n"
+                    f"• Новых пользователей: +{stats.get('inserted_users', 0)}\n"
+                    f"• Обновлено профилей: ~{stats.get('upserted_profiles', 0)}\n"
+                    f"• Новых тем: +{stats.get('inserted_topics', 0)}\n\n"
+                    f"💬 {import_result.get('message', '')}"
+                )
+            else:
+                error_msg = import_result.get('message', 'Неизвестная ошибка') if import_result else 'Ошибка соединения с сервером'
+                message = f"❌ Ошибка при импорте:\n{error_msg}"
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Импортировать еще раз", callback_data="do_import_sheet")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")]
+            ]
+            
+            await query.edit_message_text(
+                message,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            await query.edit_message_text(
+                f"❌ Ошибка при импорте:\n{str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
+                ]])
+            )
     
     async def view_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает список студентов"""

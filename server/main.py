@@ -139,6 +139,134 @@ def api_get_student(student_id: int):
             return JSONResponse({'error': 'Студент не найден'}, status_code=404)
         return dict(student)
 
+@app.get('/api/sheets-status', response_class=JSONResponse)
+def api_get_sheets_status():
+    """API для проверки статуса Google Sheets интеграции"""
+    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    service_account_file = os.getenv('SERVICE_ACCOUNT_FILE')
+    
+    if spreadsheet_id and service_account_file:
+        return {
+            "status": "configured",
+            "spreadsheet_id": spreadsheet_id[:20] + "..." if len(spreadsheet_id) > 20 else spreadsheet_id,
+            "service_account_file": service_account_file
+        }
+    else:
+        missing_vars = []
+        if not spreadsheet_id:
+            missing_vars.append("SPREADSHEET_ID")
+        if not service_account_file:
+            missing_vars.append("SERVICE_ACCOUNT_FILE")
+        
+        return {
+            "status": "not_configured",
+            "missing_vars": missing_vars
+        }
+
+@app.post('/api/import-sheet', response_class=JSONResponse)
+def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
+    """API для импорта данных из Google Sheets"""
+    try:
+        service_account_file = os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json')
+        rows = fetch_normalized_rows(spreadsheet_id=spreadsheet_id, sheet_name=sheet_name, service_account_file=service_account_file)
+        
+        inserted_users = 0
+        upserted_profiles = 0
+        inserted_topics = 0
+        
+        with get_conn() as conn, conn.cursor() as cur:
+            for r in rows:
+                full_name = (r.get('full_name') or '').strip()
+                if not full_name:
+                    continue
+                
+                # Проверяем существование пользователя
+                cur.execute('SELECT id FROM users WHERE full_name=%s AND role=\'student\' LIMIT 1', (full_name,))
+                row = cur.fetchone()
+                if row:
+                    user_id = row[0]
+                else:
+                    # Создаем нового пользователя
+                    cur.execute(
+                        '''
+                        INSERT INTO users(full_name, role, created_at, updated_at)
+                        VALUES (%s, 'student', now(), now())
+                        RETURNING id
+                        ''', (full_name,),
+                    )
+                    user_id = cur.fetchone()[0]
+                    inserted_users += 1
+                
+                # Обновляем/создаем профиль студента
+                cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
+                if cur.fetchone():
+                    cur.execute(
+                        '''
+                        UPDATE student_profiles
+                        SET program=%s, skills=%s, interests=%s, cv=%s, requirements=%s
+                        WHERE user_id=%s
+                        ''', (
+                            r.get('program'),
+                            ', '.join(r.get('hard_skills') or []) or None,
+                            ', '.join(r.get('interests') or []) or None,
+                            r.get('cv'),
+                            r.get('preferences'),
+                            user_id,
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        '''
+                        INSERT INTO student_profiles(user_id, program, skills, interests, cv, requirements)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ''', (
+                            user_id,
+                            r.get('program'),
+                            ', '.join(r.get('hard_skills') or []) or None,
+                            ', '.join(r.get('interests') or []) or None,
+                            r.get('cv'),
+                            r.get('preferences'),
+                        ),
+                    )
+                upserted_profiles += 1
+                
+                # Создаем тему, если есть
+                topic = r.get('topic')
+                if r.get('has_own_topic') and topic and (topic.get('title') or '').strip():
+                    title = topic.get('title').strip()
+                    cur.execute('SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s', (user_id, title))
+                    if not cur.fetchone():
+                        cur.execute(
+                            '''
+                            INSERT INTO topics(author_user_id, title, description, expected_outcomes,
+                                               required_skills, seeking_role, is_active, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, 'supervisor', TRUE, now(), now())
+                            ''', (
+                                user_id,
+                                title,
+                                topic.get('description'),
+                                topic.get('expected_outcomes'),
+                                ', '.join(r.get('hard_skills') or []) or None,
+                            ),
+                        )
+                        inserted_topics += 1
+        
+        return {
+            "status": "success",
+            "message": f"Импорт завершен: пользователей +{inserted_users}, профилей ~{upserted_profiles}, тем +{inserted_topics}",
+            "stats": {
+                "inserted_users": inserted_users,
+                "upserted_profiles": upserted_profiles,
+                "inserted_topics": inserted_topics
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Ошибка при импорте: {str(e)}"
+        }
+
 @app.get('/', response_class=HTMLResponse)
 def index(request: Request, kind: str = 'topics', offset: int = 0, msg: Optional[str] = None):
     items: List[Dict[str, Any]] = []
