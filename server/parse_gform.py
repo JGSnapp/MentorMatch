@@ -83,11 +83,40 @@ def normalize_row(row: List[str]) -> Dict[str, Any]:
     return result
 
 def fetch_normalized_rows(spreadsheet_id: str, sheet_name: Optional[str], service_account_file: Union[str, Path] = 'service-account.json') -> List[Dict[str, Any]]:
-    scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly']
-    creds = Credentials.from_service_account_file(str(service_account_file), scopes=scopes)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(spreadsheet_id)
-    ws = sh.worksheet(sheet_name) if sheet_name else sh.sheet1
-    values: List[List[str]] = ws.get_all_values()
-    data_rows = values[1:] if values else []
-    return [normalize_row(r) for r in data_rows if any((c or '').strip() for c in r)]
+    try:
+        print(f"DEBUG: Подключаемся к Google Sheets...")
+        scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+        creds = Credentials.from_service_account_file(str(service_account_file), scopes)
+        gc = gspread.authorize(creds)
+        
+        print(f"DEBUG: Открываем таблицу {spreadsheet_id}")
+        sh = gc.open_by_key(spreadsheet_id)
+        
+        print(f"DEBUG: Получаем лист: {sheet_name or 'первый'}")
+        ws = sh.worksheet(sheet_name) if sheet_name else sh.sheet1
+        
+        print(f"DEBUG: Читаем все значения...")
+        values: List[List[str]] = ws.get_all_values()
+        print(f"DEBUG: Получено {len(values)} строк (включая заголовок)")
+        
+        if values:
+            print(f"DEBUG: Заголовок: {values[0]}")
+            print(f"DEBUG: Первая строка данных: {values[1] if len(values) > 1 else 'нет'}")
+        
+        data_rows = values[1:] if values else []  # Пропускаем заголовок
+        print(f"DEBUG: Строк данных (без заголовка): {len(data_rows)}")
+        
+        # Фильтруем пустые строки
+        filtered_rows = [r for r in data_rows if any((c or '').strip() for c in r)]
+        print(f"DEBUG: Строк после фильтрации пустых: {len(filtered_rows)}")
+        
+        normalized = [normalize_row(r) for r in filtered_rows]
+        print(f"DEBUG: Нормализованных строк: {len(normalized)}")
+        
+        return normalized
+        
+    except Exception as e:
+        print(f"ERROR в fetch_normalized_rows: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
