@@ -669,8 +669,11 @@ class MentorMatchBot:
                     "✅ Импорт успешно завершен!\n\n"
                     f"📊 Результаты:\n"
                     f"• Новых пользователей: +{stats.get('inserted_users', 0)}\n"
-                    f"• Обновлено профилей: ~{stats.get('upserted_profiles', 0)}\n"
+                    f"• Новых профилей: +{stats.get('inserted_profiles', 0)}\n"
                     f"• Новых тем: +{stats.get('inserted_topics', 0)}\n\n"
+                    f"📈 Статистика:\n"
+                    f"• Всего строк в таблице: {stats.get('total_rows_in_sheet', 0)}\n"
+                    f"• Всего студентов в БД: {stats.get('total_students_in_db', 0)}\n\n"
                     f"💬 {import_result.get('message', '')}"
                 )
             else:

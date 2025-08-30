@@ -196,12 +196,18 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
         if rows:
             print(f"DEBUG: Первая строка: {rows[0] if rows else 'None'}")
         
+        # Получаем общее количество студентов в БД
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT COUNT(*) FROM users WHERE role = \'student\'')
+            total_students_in_db = cur.fetchone()[0]
+        
         inserted_users = 0
-        upserted_profiles = 0
+        inserted_profiles = 0
         inserted_topics = 0
         
+        # Идем с конца таблицы до первого существующего студента
         with get_conn() as conn, conn.cursor() as cur:
-            for r in rows:
+            for r in reversed(rows):  # reversed() - идем с конца
                 full_name = (r.get('full_name') or '').strip()
                 if not full_name:
                     continue
@@ -210,7 +216,9 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                 cur.execute('SELECT id FROM users WHERE full_name=%s AND role=\'student\' LIMIT 1', (full_name,))
                 row = cur.fetchone()
                 if row:
-                    user_id = row[0]
+                    # Нашли существующего студента - останавливаемся
+                    print(f"DEBUG: Найден существующий студент '{full_name}', останавливаем импорт")
+                    break
                 else:
                     # Создаем нового пользователя
                     cur.execute(
@@ -223,38 +231,21 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                     user_id = cur.fetchone()[0]
                     inserted_users += 1
                 
-                # Обновляем/создаем профиль студента
-                cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
-                if cur.fetchone():
-                    cur.execute(
-                        '''
-                        UPDATE student_profiles
-                        SET program=%s, skills=%s, interests=%s, cv=%s, requirements=%s
-                        WHERE user_id=%s
-                        ''', (
-                            r.get('program'),
-                            ', '.join(r.get('hard_skills') or []) or None,
-                            ', '.join(r.get('interests') or []) or None,
-                            r.get('cv'),
-                            r.get('preferences'),
-                            user_id,
-                        ),
-                    )
-                else:
-                    cur.execute(
-                        '''
-                        INSERT INTO student_profiles(user_id, program, skills, interests, cv, requirements)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ''', (
-                            user_id,
-                            r.get('program'),
-                            ', '.join(r.get('hard_skills') or []) or None,
-                            ', '.join(r.get('interests') or []) or None,
-                            r.get('cv'),
-                            r.get('preferences'),
-                        ),
-                    )
-                upserted_profiles += 1
+                # Создаем профиль студента (всегда новый)
+                cur.execute(
+                    '''
+                    INSERT INTO student_profiles(user_id, program, skills, interests, cv, requirements)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ''', (
+                        user_id,
+                        r.get('program'),
+                        ', '.join(r.get('hard_skills') or []) or None,
+                        ', '.join(r.get('interests') or []) or None,
+                        r.get('cv'),
+                        r.get('preferences'),
+                    ),
+                )
+                inserted_profiles += 1
                 
                 # Создаем тему, если есть
                 topic = r.get('topic')
@@ -279,11 +270,13 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
         
         return {
             "status": "success",
-            "message": f"Импорт завершен: пользователей +{inserted_users}, профилей ~{upserted_profiles}, тем +{inserted_topics}",
+            "message": f"Импорт завершен: пользователей +{inserted_users}, профилей +{inserted_profiles}, тем +{inserted_topics}",
             "stats": {
                 "inserted_users": inserted_users,
-                "upserted_profiles": upserted_profiles,
-                "inserted_topics": inserted_topics
+                "inserted_profiles": inserted_profiles,
+                "inserted_topics": inserted_topics,
+                "total_rows_in_sheet": len(rows) if rows else 0,
+                "total_students_in_db": total_students_in_db
             }
         }
         
