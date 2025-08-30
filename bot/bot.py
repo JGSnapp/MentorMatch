@@ -116,6 +116,10 @@ class MentorMatchBot:
             [InlineKeyboardButton("📚 Добавить тему", callback_data="add_topic")],
             [InlineKeyboardButton("👨‍🏫 Добавить научрука", callback_data="add_supervisor")],
             [InlineKeyboardButton("🔍 Найти кандидатов", callback_data="find_candidates")],
+            [InlineKeyboardButton("📊 Импорт из Google Sheets", callback_data="import_sheet")],
+            [InlineKeyboardButton("👥 Просмотреть студентов", callback_data="view_students")],
+            [InlineKeyboardButton("👨‍🏫 Просмотреть научруков", callback_data="view_supervisors")],
+            [InlineKeyboardButton("📝 Просмотреть темы", callback_data="view_topics")],
         ]
         
         if topics_data:
@@ -175,6 +179,14 @@ class MentorMatchBot:
         elif query.data.startswith("topic_"):
             topic_id = int(query.data.split("_")[1])
             await self.show_topic_candidates(update, context, topic_id)
+        elif query.data == "import_sheet":
+            await self.import_sheet_info(update, context)
+        elif query.data == "view_students":
+            await self.view_students(update, context)
+        elif query.data == "view_supervisors":
+            await self.view_supervisors(update, context)
+        elif query.data == "view_topics":
+            await self.view_topics(update, context)
         else:
             await query.edit_message_text("❌ Неизвестное действие")
     
@@ -543,6 +555,135 @@ class MentorMatchBot:
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
+    
+    async def import_sheet_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает информацию об импорте из Google Sheets"""
+        query = update.callback_query
+        
+        text = (
+            "📊 **Импорт из Google Sheets**\n\n"
+            "Для импорта данных используйте веб-интерфейс:\n"
+            "🌐 http://localhost:8000\n\n"
+            "**Что импортируется:**\n"
+            "• Студенты с профилями\n"
+            "• Темы исследований\n"
+            "• Навыки и интересы\n\n"
+            "**Настройка:**\n"
+            "1. Добавьте в .env:\n"
+            "   - SPREADSHEET_ID\n"
+            "   - SERVICE_ACCOUNT_FILE\n"
+            "2. Откройте веб-интерфейс\n"
+            "3. Введите ID таблицы и импортируйте"
+        )
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    
+    async def view_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает список студентов"""
+        query = update.callback_query
+        
+        students_data = await self.api_request('GET', '/api/students?limit=10')
+        
+        if not students_data:
+            await query.edit_message_text("👥 Студенты не найдены.")
+            return
+        
+        text = "👥 **Список студентов:**\n\n"
+        keyboard = []
+        
+        for student in students_data:
+            text += f"**{student.get('full_name', 'Без имени')}**\n"
+            if student.get('program'):
+                text += f"📚 Программа: {student.get('program')}\n"
+            if student.get('skills'):
+                text += f"🛠️ Навыки: {student.get('skills')}\n"
+            if student.get('interests'):
+                text += f"🔬 Интересы: {student.get('interests')}\n"
+            text += f"📅 ID: {student.get('id')}\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"👤 {student.get('full_name', 'Без имени')[:30]}...",
+                    callback_data=f"student_{student.get('id')}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    
+    async def view_supervisors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает список научных руководителей"""
+        query = update.callback_query
+        
+        supervisors_data = await self.api_request('GET', '/api/supervisors?limit=10')
+        
+        if not supervisors_data:
+            await query.edit_message_text("👨‍🏫 Научные руководители не найдены.")
+            return
+        
+        text = "👨‍🏫 **Список научных руководителей:**\n\n"
+        keyboard = []
+        
+        for supervisor in supervisors_data:
+            text += f"**{supervisor.get('full_name', 'Без имени')}**\n"
+            if supervisor.get('position'):
+                text += f"🏢 Должность: {supervisor.get('position')}\n"
+            if supervisor.get('degree'):
+                text += f"🎓 Степень: {supervisor.get('degree')}\n"
+            if supervisor.get('capacity'):
+                text += f"👥 Свободных мест: {supervisor.get('capacity')}\n"
+            if supervisor.get('interests'):
+                text += f"🔬 Интересы: {supervisor.get('interests')}\n"
+            text += f"📅 ID: {supervisor.get('id')}\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"👨‍🏫 {supervisor.get('full_name', 'Без имени')[:30]}...",
+                    callback_data=f"supervisor_{supervisor.get('id')}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    
+    async def view_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает список тем"""
+        query = update.callback_query
+        
+        topics_data = await self.api_request('GET', '/api/topics?limit=10')
+        
+        if not topics_data:
+            await query.edit_message_text("📝 Темы не найдены.")
+            return
+        
+        text = "📝 **Список тем:**\n\n"
+        keyboard = []
+        
+        for topic in topics_data:
+            role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
+            text += f"**{topic.get('title', 'Без названия')}**\n"
+            text += f"👤 Автор: {topic.get('author', 'Неизвестно')}\n"
+            text += f"👥 Ищем: {role_text}\n"
+            text += f"📅 ID: {topic.get('id')}\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"📚 {topic.get('title', 'Без названия')[:30]}...",
+                    callback_data=f"topic_{topic.get('id')}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
     
     def run(self):
         """Запускает бота"""

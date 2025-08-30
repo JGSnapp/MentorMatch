@@ -21,8 +21,6 @@ services:
         - OPENAI_API_KEY=${OPENAI_API_KEY}
         - OPENAI_MODEL=${OPENAI_MODEL}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
-        - SECRET_KEY=${SECRET_KEY}
-        - DEBUG=${DEBUG:-False}
       volumes:
         - ./server:/app
         - ./templates:/templates
@@ -37,7 +35,7 @@ services:
         - 5000:5000
       environment:
         - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-        - SERVER_URL=${SERVER_URL}
+        - SERVER_URL=http://server:8000
       volumes:
         - ./bot:/app
       depends_on:
