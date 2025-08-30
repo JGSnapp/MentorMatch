@@ -93,7 +93,20 @@ def fetch_normalized_rows(spreadsheet_id: str, sheet_name: Optional[str], servic
         sh = gc.open_by_key(spreadsheet_id)
         
         print(f"DEBUG: Получаем лист: {sheet_name or 'первый'}")
-        ws = sh.worksheet(sheet_name) if sheet_name else sh.sheet1
+        print(f"DEBUG: Доступные листы: {[ws.title for ws in sh.worksheets()]}")
+        
+        try:
+            ws = sh.worksheet(sheet_name) if sheet_name else sh.sheet1
+            print(f"DEBUG: Лист получен: {ws.title}")
+        except Exception as e:
+            print(f"DEBUG: Ошибка получения листа: {e}")
+            # Пробуем получить первый доступный лист
+            worksheets = sh.worksheets()
+            if worksheets:
+                ws = worksheets[0]
+                print(f"DEBUG: Используем первый доступный лист: {ws.title}")
+            else:
+                raise Exception("В таблице нет листов")
         
         print(f"DEBUG: Читаем все значения...")
         values: List[List[str]] = ws.get_all_values()
