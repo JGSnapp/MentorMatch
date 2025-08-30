@@ -10,6 +10,18 @@ services:
         - PROXY_BASE_URL=${PROXY_BASE_URL}
       volumes:
         - ./server:/app
+        - ./templates:/templates
+        - ./templates:/app/templates
+      restart: unless-stopped
+
+  bot:
+      build: ./bot
+      ports:
+        - 5000:5000
+      environment:
+        - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      volumes:
+        - ./bot:/app
       restart: unless-stopped 
 
   postgres:
