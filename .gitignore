@@ -1,0 +1,99 @@
+# Секретные файлы и учетные данные
+service-account.json
+*.json
+!package.json
+!package-lock.json
+secrets/
+keys/
+credentials/
+
+# Переменные окружения
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE и редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
+logs/
+log.txt
+
+# Временные файлы
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# База данных
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
+
+# Тестовые файлы
+test_*.py
+*_test.py
+tests/
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Системные файлы
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Архивы
+*.zip
+*.tar.gz
+*.rar
+*.7z

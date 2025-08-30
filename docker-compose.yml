@@ -8,10 +8,27 @@ services:
       environment:
         - PROXY_API_KEY=${PROXY_API_KEY}
         - PROXY_BASE_URL=${PROXY_BASE_URL}
+        - PROXY_MODEL=${PROXY_MODEL:-gpt-4o-mini}
+        - POSTGRES_USER=${POSTGRES_USER}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        - POSTGRES_DB=${POSTGRES_DB}
+        - POSTGRES_HOST=${POSTGRES_HOST}
+        - POSTGRES_PORT=${POSTGRES_PORT}
+        - DATABASE_URL=${DATABASE_URL}
+        - SPREADSHEET_ID=${SPREADSHEET_ID}
+        - SERVICE_ACCOUNT_FILE=${SERVICE_ACCOUNT_FILE}
+        - SERVER_URL=${SERVER_URL}
+        - OPENAI_API_KEY=${OPENAI_API_KEY}
+        - OPENAI_MODEL=${OPENAI_MODEL}
+        - LOG_LEVEL=${LOG_LEVEL:-INFO}
+        - SECRET_KEY=${SECRET_KEY}
+        - DEBUG=${DEBUG:-False}
       volumes:
         - ./server:/app
         - ./templates:/templates
         - ./templates:/app/templates
+      depends_on:
+        - postgres
       restart: unless-stopped
 
   bot:
@@ -20,8 +37,11 @@ services:
         - 5000:5000
       environment:
         - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+        - SERVER_URL=${SERVER_URL}
       volumes:
         - ./bot:/app
+      depends_on:
+        - server
       restart: unless-stopped 
 
   postgres:

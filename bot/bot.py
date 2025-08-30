@@ -1,12 +1,11 @@
 import os
 import logging
+import aiohttp
+import asyncio
 from typing import Dict, Any, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
 from dotenv import load_dotenv
-import psycopg2
-import psycopg2.extras
-from datetime import datetime
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -33,27 +32,36 @@ class MentorMatchBot:
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN не найден в переменных окружения")
         
+        self.server_url = os.getenv('SERVER_URL', 'http://localhost:8000')
         self.application = Application.builder().token(self.token).build()
         self.setup_handlers()
         
         # Временное хранилище данных пользователей
         self.user_data: Dict[int, Dict[str, Any]] = {}
         
-    def build_db_dsn(self) -> str:
-        """Строит строку подключения к БД"""
-        dsn = os.getenv('DATABASE_URL')
-        if dsn:
-            return dsn
-        user = os.getenv('POSTGRES_USER', 'mentormatch')
-        password = os.getenv('POSTGRES_PASSWORD', 'secret')
-        host = os.getenv('POSTGRES_HOST', 'localhost')
-        port = os.getenv('POSTGRES_PORT', '5432')
-        db = os.getenv('POSTGRES_DB', 'mentormatch')
-        return f'postgresql://{user}:{password}@{host}:{port}/{db}'
-    
-    def get_conn(self):
-        """Получает соединение с БД"""
-        return psycopg2.connect(self.build_db_dsn())
+    async def api_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Optional[Dict]:
+        """Выполняет HTTP запрос к серверу"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.server_url}{endpoint}"
+                
+                if method.upper() == 'GET':
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            return await response.json()
+                        else:
+                            logger.error(f"API GET error: {response.status}")
+                            return None
+                elif method.upper() == 'POST':
+                    async with session.post(url, data=data) as response:
+                        if response.status in [200, 303]:
+                            return {'status': 'success'}
+                        else:
+                            logger.error(f"API POST error: {response.status}")
+                            return None
+        except Exception as e:
+            logger.error(f"API request error: {e}")
+            return None
     
     def setup_handlers(self):
         """Настраивает обработчики команд"""
@@ -99,22 +107,26 @@ class MentorMatchBot:
         
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
+        user_id = update.effective_user.id
+        
+        # Получаем последние темы с сервера
+        topics_data = await self.api_request('GET', '/latest?kind=topics')
+        
         keyboard = [
             [InlineKeyboardButton("📚 Добавить тему", callback_data="add_topic")],
             [InlineKeyboardButton("👨‍🏫 Добавить научрука", callback_data="add_supervisor")],
             [InlineKeyboardButton("🔍 Найти кандидатов", callback_data="find_candidates")],
-            [InlineKeyboardButton("📊 Импорт из Google Sheets", callback_data="import_sheet")],
-            [InlineKeyboardButton("👥 Список студентов", callback_data="list_students")],
-            [InlineKeyboardButton("👨‍🏫 Список научруков", callback_data="list_supervisors")],
-            [InlineKeyboardButton("📝 Список тем", callback_data="list_topics")],
-            [InlineKeyboardButton("❌ Сбросить данные", callback_data="reset_data")]
         ]
+        
+        if topics_data:
+            keyboard.append([InlineKeyboardButton("📋 Последние темы", callback_data="show_topics")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "🎓 Добро пожаловать в MentorMatch Bot!\n\n"
+            "🤖 **Добро пожаловать в MentorMatch!**\n\n"
             "Выберите действие:",
+            parse_mode='Markdown',
             reply_markup=reply_markup
         )
         
@@ -122,29 +134,17 @@ class MentorMatchBot:
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /help"""
-        help_text = """
-🤖 **MentorMatch Bot - Помощь**
-
-**Основные команды:**
-/start - Главное меню
-/help - Эта справка
-/cancel - Отменить текущее действие
-
-**Функции:**
-• Добавление тем для ВКР
-• Добавление научных руководителей
-• Поиск кандидатов по темам
-• Импорт данных из Google Sheets
-• Просмотр списков пользователей и тем
-• Сброс введенных данных
-
-**Как использовать:**
-1. Нажмите /start для открытия главного меню
-2. Выберите нужную функцию
-3. Следуйте инструкциям бота
-4. Используйте /cancel для отмены
-        """
-        
+        help_text = (
+            "📖 **Справка по командам:**\n\n"
+            "/start - Главное меню\n"
+            "/help - Эта справка\n"
+            "/cancel - Отменить текущее действие\n\n"
+            "**Возможности бота:**\n"
+            "• Добавление тем исследований\n"
+            "• Добавление научных руководителей\n"
+            "• Поиск кандидатов по темам\n"
+            "• Просмотр последних добавлений"
+        )
         await update.message.reply_text(help_text, parse_mode='Markdown')
     
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,28 +156,91 @@ class MentorMatchBot:
             del self.user_data[user_id]
         
         await update.message.reply_text(
-            "❌ Действие отменено. Используйте /start для возврата в главное меню."
+            "❌ Действие отменено. Используйте /start для возврата в главное меню.",
+            reply_markup=ReplyKeyboardRemove()
         )
         
         return ConversationHandler.END
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик callback кнопок"""
+        """Обрабатывает callback кнопки"""
         query = update.callback_query
         await query.answer()
         
-        if query.data == "find_candidates":
-            await self.find_candidates(update, context)
-        elif query.data == "import_sheet":
-            await self.import_sheet_start(update, context)
-        elif query.data == "list_students":
-            await self.list_students(update, context)
-        elif query.data == "list_supervisors":
-            await self.list_supervisors(update, context)
-        elif query.data == "list_topics":
-            await self.list_topics(update, context)
-        elif query.data == "reset_data":
-            await self.reset_user_data(update, context)
+        if query.data == "back_to_main":
+            await self.start_command(update, context)
+            return CHOOSING_ACTION
+        elif query.data == "show_topics":
+            await self.show_topics(update, context)
+        elif query.data.startswith("topic_"):
+            topic_id = int(query.data.split("_")[1])
+            await self.show_topic_candidates(update, context, topic_id)
+        else:
+            await query.edit_message_text("❌ Неизвестное действие")
+    
+    async def show_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает последние темы"""
+        query = update.callback_query
+        
+        topics_data = await self.api_request('GET', '/latest?kind=topics')
+        
+        if not topics_data:
+            await query.edit_message_text("📝 Темы не найдены.")
+            return
+        
+        text = "📚 **Последние темы:**\n\n"
+        keyboard = []
+        
+        for topic in topics_data[:10]:
+            role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
+            text += f"• **{topic.get('title', 'Без названия')}**\n"
+            text += f"  👥 Ищем: {role_text}\n"
+            text += f"  👤 Автор: {topic.get('author', 'Неизвестно')}\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🔍 {topic.get('title', 'Без названия')[:30]}...",
+                    callback_data=f"topic_{topic.get('id')}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    
+    async def show_topic_candidates(self, update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
+        """Показывает кандидатов для темы"""
+        query = update.callback_query
+        
+        # Получаем матчинг с сервера
+        match_data = await self.api_request('POST', '/match-topic', {
+            'topic_id': str(topic_id),
+            'target_role': 'student'
+        })
+        
+        if not match_data or match_data.get('status') != 'ok':
+            await query.edit_message_text("❌ Ошибка при поиске кандидатов.")
+            return
+        
+        topic_title = match_data.get('topic_title', 'Неизвестная тема')
+        items = match_data.get('items', [])
+        
+        text = f"🔍 **Кандидаты для темы:**\n**{topic_title}**\n\n"
+        
+        if not items:
+            text += "📝 Кандидаты не найдены."
+        else:
+            for item in items:
+                text += f"**{item.get('rank')}.** {item.get('full_name', 'Неизвестно')}\n"
+                if item.get('reason'):
+                    text += f"   💡 {item.get('reason')}\n"
+                text += "\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад к темам", callback_data="show_topics")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
     
     async def add_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начинает процесс добавления темы"""
@@ -190,7 +253,7 @@ class MentorMatchBot:
         self.user_data[user_id]['topic'] = {}
         
         await query.edit_message_text(
-            "📚 **Добавление новой темы**\n\n"
+            "📚 **Добавление темы исследования**\n\n"
             "Введите название темы:",
             parse_mode='Markdown'
         )
@@ -218,7 +281,7 @@ class MentorMatchBot:
         self.user_data[user_id]['topic']['description'] = description
         
         await update.message.reply_text(
-            "🎯 Введите ожидаемые результаты:"
+            "🎯 Введите ожидаемые результаты (или 'нет' для пропуска):"
         )
         
         return TOPIC_OUTCOMES
@@ -226,12 +289,12 @@ class MentorMatchBot:
     async def get_topic_outcomes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получает ожидаемые результаты"""
         user_id = update.effective_user.id
-        outcomes = update.message.text
+        outcomes = update.message.text if update.message.text != 'нет' else None
         
         self.user_data[user_id]['topic']['expected_outcomes'] = outcomes
         
         await update.message.reply_text(
-            "🛠️ Введите требуемые навыки (через запятую):"
+            "🛠️ Введите требуемые навыки (или 'нет' для пропуска):"
         )
         
         return TOPIC_SKILLS
@@ -239,18 +302,18 @@ class MentorMatchBot:
     async def get_topic_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получает требуемые навыки"""
         user_id = update.effective_user.id
-        skills = update.message.text
+        skills = update.message.text if update.message.text != 'нет' else None
         
         self.user_data[user_id]['topic']['required_skills'] = skills
         
         keyboard = [
-            [KeyboardButton("Студента"), KeyboardButton("Научрука")],
-            [KeyboardButton("Отмена")]
+            [KeyboardButton("Студента")],
+            [KeyboardButton("Научрука")]
         ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
         
         await update.message.reply_text(
-            "👥 Кого ищете под эту тему?",
+            "👥 Выберите, кого ищем для этой темы:",
             reply_markup=reply_markup
         )
         
@@ -261,56 +324,37 @@ class MentorMatchBot:
         user_id = update.effective_user.id
         role_text = update.message.text
         
-        if role_text == "Отмена":
-            await update.message.reply_text(
-                "❌ Добавление темы отменено. Используйте /start для возврата в главное меню.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return ConversationHandler.END
-        
         seeking_role = 'student' if role_text == "Студента" else 'supervisor'
-        self.user_data[user_id]['topic']['seeking_role'] = seeking_role
         
-        # Сохраняем тему в БД
-        try:
-            with self.get_conn() as conn, conn.cursor() as cur:
-                cur.execute(
-                    '''
-                    INSERT INTO topics(author_user_id, title, description, expected_outcomes,
-                                       required_skills, seeking_role, is_active, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, TRUE, now(), now())
-                    RETURNING id
-                    ''', (
-                        user_id,
-                        self.user_data[user_id]['topic']['title'],
-                        self.user_data[user_id]['topic']['description'],
-                        self.user_data[user_id]['topic']['expected_outcomes'],
-                        self.user_data[user_id]['topic']['required_skills'],
-                        seeking_role,
-                    ),
-                )
-                topic_id = cur.fetchone()[0]
-                conn.commit()
-            
-            # Очищаем данные пользователя
-            del self.user_data[user_id]
-            
+        # Отправляем данные на сервер
+        topic_data = {
+            'title': self.user_data[user_id]['topic']['title'],
+            'description': self.user_data[user_id]['topic']['description'],
+            'expected_outcomes': self.user_data[user_id]['topic']['expected_outcomes'],
+            'required_skills': self.user_data[user_id]['topic']['required_skills'],
+            'seeking_role': seeking_role,
+            'author_full_name': f"User_{user_id}"  # Временное имя автора
+        }
+        
+        result = await self.api_request('POST', '/add-topic', topic_data)
+        
+        if result and result.get('status') == 'success':
             await update.message.reply_text(
                 f"✅ **Тема успешно добавлена!**\n\n"
                 f"📚 Название: {self.user_data[user_id]['topic']['title']}\n"
-                f"👥 Ищем: {seeking_role}\n"
-                f"🆔 ID темы: {topic_id}\n\n"
+                f"👥 Ищем: {seeking_role}\n\n"
                 f"Используйте /start для возврата в главное меню.",
                 parse_mode='Markdown',
                 reply_markup=ReplyKeyboardRemove()
             )
-            
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении темы: {e}")
+        else:
             await update.message.reply_text(
                 "❌ Ошибка при сохранении темы. Попробуйте позже.",
                 reply_markup=ReplyKeyboardRemove()
             )
+        
+        # Очищаем данные пользователя
+        del self.user_data[user_id]
         
         return ConversationHandler.END
     
@@ -392,13 +436,13 @@ class MentorMatchBot:
         self.user_data[user_id]['supervisor']['degree'] = degree
         
         await update.message.reply_text(
-            "👥 Введите количество студентов, которых готов взять:"
+            "👥 Введите количество мест для студентов:"
         )
         
         return SUPERVISOR_CAPACITY
     
     async def get_supervisor_capacity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает количество студентов"""
+        """Получает количество мест"""
         user_id = update.effective_user.id
         try:
             capacity = int(update.message.text)
@@ -421,7 +465,7 @@ class MentorMatchBot:
         self.user_data[user_id]['supervisor']['requirements'] = requirements
         
         await update.message.reply_text(
-            "🔬 Введите научные интересы (или 'нет' для пропуска):"
+            "🔬 Введите научные интересы:"
         )
         
         return SUPERVISOR_INTERESTS
@@ -433,42 +477,21 @@ class MentorMatchBot:
         
         self.user_data[user_id]['supervisor']['interests'] = interests
         
-        # Сохраняем научрука в БД
-        try:
-            with self.get_conn() as conn, conn.cursor() as cur:
-                # Создаем пользователя
-                cur.execute(
-                    '''
-                    INSERT INTO users(full_name, email, username, role, created_at, updated_at)
-                    VALUES (%s, %s, %s, 'supervisor', now(), now())
-                    RETURNING id
-                    ''', (
-                        self.user_data[user_id]['supervisor']['full_name'],
-                        self.user_data[user_id]['supervisor']['email'],
-                        self.user_data[user_id]['supervisor']['username'],
-                    ),
-                )
-                user_id_db = cur.fetchone()[0]
-                
-                # Создаем профиль научрука
-                cur.execute(
-                    '''
-                    INSERT INTO supervisor_profiles(user_id, position, degree, capacity, requirements, interests)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ''', (
-                        user_id_db,
-                        self.user_data[user_id]['supervisor']['position'],
-                        self.user_data[user_id]['supervisor']['degree'],
-                        self.user_data[user_id]['supervisor']['capacity'],
-                        self.user_data[user_id]['supervisor']['requirements'],
-                        self.user_data[user_id]['supervisor']['interests'],
-                    ),
-                )
-                conn.commit()
-            
-            # Очищаем данные пользователя
-            del self.user_data[user_id]
-            
+        # Отправляем данные на сервер
+        supervisor_data = {
+            'full_name': self.user_data[user_id]['supervisor']['full_name'],
+            'email': self.user_data[user_id]['supervisor']['email'],
+            'username': self.user_data[user_id]['supervisor']['username'],
+            'position': self.user_data[user_id]['supervisor']['position'],
+            'degree': self.user_data[user_id]['supervisor']['degree'],
+            'capacity': str(self.user_data[user_id]['supervisor']['capacity']),
+            'requirements': self.user_data[user_id]['supervisor']['requirements'],
+            'interests': self.user_data[user_id]['supervisor']['interests']
+        }
+        
+        result = await self.api_request('POST', '/add-supervisor', supervisor_data)
+        
+        if result and result.get('status') == 'success':
             await update.message.reply_text(
                 f"✅ **Научный руководитель успешно добавлен!**\n\n"
                 f"👨‍🏫 ФИО: {self.user_data[user_id]['supervisor']['full_name']}\n"
@@ -478,13 +501,14 @@ class MentorMatchBot:
                 parse_mode='Markdown',
                 reply_markup=ReplyKeyboardRemove()
             )
-            
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении научрука: {e}")
+        else:
             await update.message.reply_text(
                 "❌ Ошибка при сохранении научного руководителя. Попробуйте позже.",
                 reply_markup=ReplyKeyboardRemove()
             )
+        
+        # Очищаем данные пользователя
+        del self.user_data[user_id]
         
         return ConversationHandler.END
     
@@ -492,223 +516,38 @@ class MentorMatchBot:
         """Находит кандидатов по темам"""
         query = update.callback_query
         
-        try:
-            with self.get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # Получаем список тем
-                cur.execute(
-                    '''
-                    SELECT t.id, t.title, t.seeking_role, u.full_name AS author
-                    FROM topics t
-                    JOIN users u ON u.id = t.author_user_id
-                    WHERE t.is_active = TRUE
-                    ORDER BY t.created_at DESC
-                    LIMIT 10
-                    '''
+        # Получаем темы с сервера
+        topics_data = await self.api_request('GET', '/latest?kind=topics')
+        
+        if not topics_data:
+            await query.edit_message_text("📝 Темы не найдены.")
+            return
+        
+        # Создаем кнопки для выбора темы
+        keyboard = []
+        for topic in topics_data[:10]:
+            role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"📚 {topic.get('title', 'Без названия')[:30]}... ({role_text})",
+                    callback_data=f"topic_{topic.get('id')}"
                 )
-                topics = cur.fetchall()
-                
-                if not topics:
-                    await query.edit_message_text("📝 Темы не найдены.")
-                    return
-                
-                # Создаем кнопки для выбора темы
-                keyboard = []
-                for topic in topics:
-                    role_text = "студента" if topic['seeking_role'] == 'student' else "научрука"
-                    keyboard.append([
-                        InlineKeyboardButton(
-                            f"📚 {topic['title'][:30]}... ({role_text})",
-                            callback_data=f"topic_{topic['id']}"
-                        )
-                    ])
-                
-                keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-                    "🔍 **Выберите тему для поиска кандидатов:**\n\n"
-                    "Нажмите на тему, чтобы увидеть подходящих кандидатов.",
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка при поиске кандидатов: {e}")
-            await query.edit_message_text("❌ Ошибка при поиске кандидатов.")
-    
-    async def import_sheet_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начинает процесс импорта из Google Sheets"""
-        query = update.callback_query
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            "📊 **Импорт из Google Sheets**\n\n"
-            "Для импорта данных используйте веб-интерфейс:\n"
-            "http://localhost:8000\n\n"
-            "Или настройте переменные окружения:\n"
-            "• SPREADSHEET_ID\n"
-            "• SERVICE_ACCOUNT_FILE\n\n"
-            "Используйте /start для возврата в главное меню."
-        )
-    
-    async def list_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает список студентов"""
-        query = update.callback_query
-        
-        try:
-            with self.get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    '''
-                    SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                           sp.program, sp.skills, sp.interests
-                    FROM users u
-                    LEFT JOIN student_profiles sp ON sp.user_id = u.id
-                    WHERE u.role = 'student'
-                    ORDER BY u.created_at DESC
-                    LIMIT 10
-                    '''
-                )
-                students = cur.fetchall()
-                
-                if not students:
-                    await query.edit_message_text("👥 Студенты не найдены.")
-                    return
-                
-                text = "👥 **Список студентов:**\n\n"
-                for student in students:
-                    text += f"👤 **{student['full_name']}**\n"
-                    if student['program']:
-                        text += f"📚 Программа: {student['program']}\n"
-                    if student['skills']:
-                        text += f"🛠️ Навыки: {student['skills']}\n"
-                    if student['interests']:
-                        text += f"🔬 Интересы: {student['interests']}\n"
-                    text += f"📅 Зарегистрирован: {student['created_at'].strftime('%d.%m.%Y')}\n\n"
-                
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-                    text,
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка при получении списка студентов: {e}")
-            await query.edit_message_text("❌ Ошибка при получении списка студентов.")
-    
-    async def list_supervisors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает список научруков"""
-        query = update.callback_query
-        
-        try:
-            with self.get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    '''
-                    SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                           sup.position, sup.degree, sup.capacity, sup.interests
-                    FROM users u
-                    LEFT JOIN supervisor_profiles sup ON sup.user_id = u.id
-                    WHERE u.role = 'supervisor'
-                    ORDER BY u.created_at DESC
-                    LIMIT 10
-                    '''
-                )
-                supervisors = cur.fetchall()
-                
-                if not supervisors:
-                    await query.edit_message_text("👨‍🏫 Научные руководители не найдены.")
-                    return
-                
-                text = "👨‍🏫 **Список научных руководителей:**\n\n"
-                for supervisor in supervisors:
-                    text += f"👤 **{supervisor['full_name']}**\n"
-                    if supervisor['position']:
-                        text += f"🏢 Должность: {supervisor['position']}\n"
-                    if supervisor['degree']:
-                        text += f"🎓 Степень: {supervisor['degree']}\n"
-                    if supervisor['capacity']:
-                        text += f"👥 Свободных мест: {supervisor['capacity']}\n"
-                    if supervisor['interests']:
-                        text += f"🔬 Интересы: {supervisor['interests']}\n"
-                    text += f"📅 Зарегистрирован: {supervisor['created_at'].strftime('%d.%m.%Y')}\n\n"
-                
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-                    text,
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка при получении списка научруков: {e}")
-            await query.edit_message_text("❌ Ошибка при получении списка научных руководителей.")
-    
-    async def list_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает список тем"""
-        query = update.callback_query
-        
-        try:
-            with self.get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    '''
-                    SELECT t.id, t.title, t.seeking_role, t.created_at, u.full_name AS author
-                    FROM topics t
-                    JOIN users u ON u.id = t.author_user_id
-                    WHERE t.is_active = TRUE
-                    ORDER BY t.created_at DESC
-                    LIMIT 10
-                    '''
-                )
-                topics = cur.fetchall()
-                
-                if not topics:
-                    await query.edit_message_text("📝 Темы не найдены.")
-                    return
-                
-                text = "📝 **Список тем:**\n\n"
-                for topic in topics:
-                    role_text = "студента" if topic['seeking_role'] == 'student' else "научрука"
-                    text += f"📚 **{topic['title']}**\n"
-                    text += f"👤 Автор: {topic['author']}\n"
-                    text += f"👥 Ищем: {role_text}\n"
-                    text += f"📅 Создана: {topic['created_at'].strftime('%d.%m.%Y')}\n\n"
-                
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-                    text,
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка при получении списка тем: {e}")
-            await query.edit_message_text("❌ Ошибка при получении списка тем.")
-    
-    async def reset_user_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Сбрасывает данные пользователя"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        if user_id in self.user_data:
-            del self.user_data[user_id]
-        
-        await query.edit_message_text(
-            "✅ Данные сброшены. Используйте /start для возврата в главное меню."
+            "🔍 **Выберите тему для поиска кандидатов:**\n\n"
+            "Нажмите на тему, чтобы увидеть подходящих кандидатов.",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
         )
     
     def run(self):
         """Запускает бота"""
-        logger.info("Запуск MentorMatch Bot...")
         self.application.run_polling()
 
 if __name__ == "__main__":
-    try:
-        bot = MentorMatchBot()
-        bot.run()
-    except Exception as e:
-        logger.error(f"Ошибка запуска бота: {e}")
+    bot = MentorMatchBot()
+    bot.run()

@@ -30,6 +30,115 @@ def get_conn():
 app = FastAPI(title='MentorMatch Admin MVP')
 templates = Jinja2Templates(directory=str((Path(__file__).parent.parent / 'templates').resolve()))
 
+# API эндпоинты для бота
+@app.get('/api/topics', response_class=JSONResponse)
+def api_get_topics(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0)):
+    """API для получения списка тем"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT t.id, t.title, t.description, t.seeking_role, t.created_at, 
+                   u.full_name AS author, t.expected_outcomes, t.required_skills
+            FROM topics t
+            JOIN users u ON u.id = t.author_user_id
+            WHERE t.is_active = TRUE
+            ORDER BY t.created_at DESC
+            OFFSET %s LIMIT %s
+            ''', (offset, limit),
+        )
+        topics = cur.fetchall()
+        return [dict(topic) for topic in topics]
+
+@app.get('/api/supervisors', response_class=JSONResponse)
+def api_get_supervisors(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0)):
+    """API для получения списка научных руководителей"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT u.id, u.full_name, u.username, u.email, u.created_at,
+                   sup.position, sup.degree, sup.capacity, sup.interests, sup.requirements
+            FROM users u
+            LEFT JOIN supervisor_profiles sup ON sup.user_id = u.id
+            WHERE u.role = 'supervisor'
+            ORDER BY u.created_at DESC
+            OFFSET %s LIMIT %s
+            ''', (offset, limit),
+        )
+        supervisors = cur.fetchall()
+        return [dict(supervisor) for supervisor in supervisors]
+
+@app.get('/api/students', response_class=JSONResponse)
+def api_get_students(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0)):
+    """API для получения списка студентов"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT u.id, u.full_name, u.username, u.email, u.created_at,
+                   sp.program, sp.skills, sp.interests, sp.cv
+            FROM users u
+            LEFT JOIN student_profiles sp ON sp.user_id = u.id
+            WHERE u.role = 'student'
+            ORDER BY u.created_at DESC
+            OFFSET %s LIMIT %s
+            ''', (offset, limit),
+        )
+        students = cur.fetchall()
+        return [dict(student) for student in students]
+
+@app.get('/api/topics/{topic_id}', response_class=JSONResponse)
+def api_get_topic(topic_id: int):
+    """API для получения конкретной темы"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT t.id, t.title, t.description, t.seeking_role, t.created_at, 
+                   u.full_name AS author, t.expected_outcomes, t.required_skills
+            FROM topics t
+            JOIN users u ON u.id = t.author_user_id
+            WHERE t.id = %s AND t.is_active = TRUE
+            ''', (topic_id,),
+        )
+        topic = cur.fetchone()
+        if not topic:
+            return JSONResponse({'error': 'Тема не найдена'}, status_code=404)
+        return dict(topic)
+
+@app.get('/api/supervisors/{supervisor_id}', response_class=JSONResponse)
+def api_get_supervisor(supervisor_id: int):
+    """API для получения конкретного научного руководителя"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT u.id, u.full_name, u.username, u.email, u.created_at,
+                   sup.position, sup.degree, sup.capacity, sup.interests, sup.requirements
+            FROM users u
+            LEFT JOIN supervisor_profiles sup ON sup.user_id = u.id
+            WHERE u.id = %s AND u.role = 'supervisor'
+            ''', (supervisor_id,),
+        )
+        supervisor = cur.fetchone()
+        if not supervisor:
+            return JSONResponse({'error': 'Научный руководитель не найден'}, status_code=404)
+        return dict(supervisor)
+
+@app.get('/api/students/{student_id}', response_class=JSONResponse)
+def api_get_student(student_id: int):
+    """API для получения конкретного студента"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT u.id, u.full_name, u.username, u.email, u.created_at,
+                   sp.program, sp.skills, sp.interests, sp.cv
+            FROM users u
+            LEFT JOIN student_profiles sp ON sp.user_id = u.id
+            WHERE u.id = %s AND u.role = 'student'
+            ''', (student_id,),
+        )
+        student = cur.fetchone()
+        if not student:
+            return JSONResponse({'error': 'Студент не найден'}, status_code=404)
+        return dict(student)
+
 @app.get('/', response_class=HTMLResponse)
 def index(request: Request, kind: str = 'topics', offset: int = 0, msg: Optional[str] = None):
     items: List[Dict[str, Any]] = []
