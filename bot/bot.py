@@ -127,12 +127,23 @@ class MentorMatchBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
-            "🤖 **Добро пожаловать в MentorMatch!**\n\n"
-            "Выберите действие:",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
+        # Проверяем, откуда пришел запрос
+        if update.callback_query:
+            # Если это callback query, редактируем сообщение
+            await update.callback_query.edit_message_text(
+                "🤖 **Добро пожаловать в MentorMatch!**\n\n"
+                "Выберите действие:",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            # Если это обычная команда, отправляем новое сообщение
+            await update.message.reply_text(
+                "🤖 **Добро пожаловать в MentorMatch!**\n\n"
+                "Выберите действие:",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
         
         return CHOOSING_ACTION
     
@@ -560,21 +571,48 @@ class MentorMatchBot:
         """Показывает информацию об импорте из Google Sheets"""
         query = update.callback_query
         
-        text = (
-            "📊 Импорт из Google Sheets\n\n"
-            "Для импорта данных используйте веб-интерфейс:\n"
-            "🌐 http://localhost:8000\n\n"
-            "Что импортируется:\n"
-            "• Студенты с профилями\n"
-            "• Темы исследований\n"
-            "• Навыки и интересы\n\n"
-            "Настройка:\n"
-            "1. Добавьте в .env:\n"
-            "   - SPREADSHEET_ID\n"
-            "   - SERVICE_ACCOUNT_FILE\n"
-            "2. Откройте веб-интерфейс\n"
-            "3. Введите ID таблицы и импортируйте"
-        )
+        # Проверяем наличие переменных окружения
+        spreadsheet_id = os.getenv('SPREADSHEET_ID')
+        service_account_file = os.getenv('SERVICE_ACCOUNT_FILE')
+        
+        if spreadsheet_id and service_account_file:
+            # Переменные настроены - показываем информацию об импорте
+            text = (
+                "📊 Импорт из Google Sheets\n\n"
+                "✅ Переменные окружения настроены:\n"
+                f"• SPREADSHEET_ID: {spreadsheet_id[:20]}...\n"
+                f"• SERVICE_ACCOUNT_FILE: {service_account_file}\n\n"
+                "Для импорта данных:\n"
+                "1. Откройте веб-интерфейс: http://localhost:8000\n"
+                "2. Введите ID таблицы (если отличается)\n"
+                "3. Нажмите 'Импортировать'\n\n"
+                "Что импортируется:\n"
+                "• Студенты с профилями\n"
+                "• Темы исследований\n"
+                "• Навыки и интересы"
+            )
+        else:
+            # Переменные не настроены - показываем инструкции
+            missing_vars = []
+            if not spreadsheet_id:
+                missing_vars.append("SPREADSHEET_ID")
+            if not service_account_file:
+                missing_vars.append("SERVICE_ACCOUNT_FILE")
+            
+            text = (
+                "📊 Импорт из Google Sheets\n\n"
+                "❌ Переменные окружения не настроены:\n"
+                f"• Отсутствуют: {', '.join(missing_vars)}\n\n"
+                "Для настройки добавьте в .env:\n"
+                "• SPREADSHEET_ID=your_spreadsheet_id\n"
+                "• SERVICE_ACCOUNT_FILE=service-account.json\n\n"
+                "Что импортируется:\n"
+                "• Студенты с профилями\n"
+                "• Темы исследований\n"
+                "• Навыки и интересы\n\n"
+                "После настройки используйте веб-интерфейс:\n"
+                "🌐 http://localhost:8000"
+            )
         
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)

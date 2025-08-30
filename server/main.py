@@ -398,7 +398,16 @@ def latest(kind: str = Query('topics', enum=['students', 'supervisors', 'topics'
                 ''', (max(0, offset),),
             )
         rows = cur.fetchall()
-    return JSONResponse(rows)
+        
+        # Конвертируем datetime объекты в строки для JSON сериализации
+        serializable_rows = []
+        for row in rows:
+            row_dict = dict(row)
+            if 'created_at' in row_dict and row_dict['created_at']:
+                row_dict['created_at'] = row_dict['created_at'].isoformat()
+            serializable_rows.append(row_dict)
+    
+    return JSONResponse(serializable_rows)
 
 @app.post('/match-topic', response_class=JSONResponse)
 def match_topic(topic_id: int = Form(...), target_role: str = Form('student')):
