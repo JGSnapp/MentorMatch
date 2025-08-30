@@ -86,7 +86,7 @@ def fetch_normalized_rows(spreadsheet_id: str, sheet_name: Optional[str], servic
     try:
         print(f"DEBUG: Подключаемся к Google Sheets...")
         scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly']
-        creds = Credentials.from_service_account_file(str(service_account_file), scopes)
+        creds = Credentials.from_service_account_file(str(service_account_file), scopes=scopes)
         gc = gspread.authorize(creds)
         
         print(f"DEBUG: Открываем таблицу {spreadsheet_id}")
