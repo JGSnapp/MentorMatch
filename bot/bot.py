@@ -138,12 +138,12 @@ class MentorMatchBot:
             )
         else:
             # Если это обычная команда, отправляем новое сообщение
-            await update.message.reply_text(
+        await update.message.reply_text(
                 "🤖 **Добро пожаловать в MentorMatch!**\n\n"
-                "Выберите действие:",
+            "Выберите действие:",
                 parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
+            reply_markup=reply_markup
+        )
         
         return CHOOSING_ACTION
     
@@ -551,29 +551,29 @@ class MentorMatchBot:
         topics_data = await self.api_request('GET', '/latest?kind=topics')
         
         if not topics_data:
-            await query.edit_message_text("📝 Темы не найдены.")
-            return
-        
-        # Создаем кнопки для выбора темы
-        keyboard = []
+                    await query.edit_message_text("📝 Темы не найдены.")
+                    return
+                
+                # Создаем кнопки для выбора темы
+                keyboard = []
         for topic in topics_data[:10]:
             role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
-            keyboard.append([
-                InlineKeyboardButton(
+                    keyboard.append([
+                        InlineKeyboardButton(
                     f"📚 {topic.get('title', 'Без названия')[:30]}... ({role_text})",
                     callback_data=f"topic_{topic.get('id')}"
-                )
-            ])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
+                        )
+                    ])
+                
+                keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
             "🔍 Выберите тему для поиска кандидатов:\n\n"
-            "Нажмите на тему, чтобы увидеть подходящих кандидатов.",
-            reply_markup=reply_markup
-        )
-    
+                    "Нажмите на тему, чтобы увидеть подходящих кандидатов.",
+                    reply_markup=reply_markup
+                )
+                
     async def import_sheet_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает информацию об импорте из Google Sheets"""
         query = update.callback_query
@@ -655,8 +655,8 @@ class MentorMatchBot:
                         InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
                     ]])
                 )
-                return
-            
+                    return
+                
             # Выполняем импорт через API
             import_result = await self.api_request('POST', '/api/import-sheet', {
                 'spreadsheet_id': config_data.get('spreadsheet_id'),
@@ -684,12 +684,12 @@ class MentorMatchBot:
                 [InlineKeyboardButton("🔄 Импортировать еще раз", callback_data="do_import_sheet")],
                 [InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")]
             ]
-            
-            await query.edit_message_text(
+                
+                await query.edit_message_text(
                 message,
                 reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            
+                )
+                
         except Exception as e:
             await query.edit_message_text(
                 f"❌ Ошибка при импорте:\n{str(e)}",
@@ -740,9 +740,9 @@ class MentorMatchBot:
         supervisors_data = await self.api_request('GET', '/api/supervisors?limit=10')
         
         if not supervisors_data:
-            await query.edit_message_text("👨‍🏫 Научные руководители не найдены.")
-            return
-        
+                    await query.edit_message_text("👨‍🏫 Научные руководители не найдены.")
+                    return
+                
         text = "👨‍🏫 Список научных руководителей:\n\n"
         keyboard = []
         
@@ -766,8 +766,8 @@ class MentorMatchBot:
             ])
         
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
         await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def view_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -777,9 +777,9 @@ class MentorMatchBot:
         topics_data = await self.api_request('GET', '/api/topics?limit=10')
         
         if not topics_data:
-            await query.edit_message_text("📝 Темы не найдены.")
-            return
-        
+                    await query.edit_message_text("📝 Темы не найдены.")
+                    return
+                
         text = "📝 Список тем:\n\n"
         keyboard = []
         
@@ -787,7 +787,7 @@ class MentorMatchBot:
             role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
             text += f"{topic.get('title', 'Без названия')}\n"
             text += f"👤 Автор: {topic.get('author', 'Неизвестно')}\n"
-            text += f"👥 Ищем: {role_text}\n"
+                    text += f"👥 Ищем: {role_text}\n"
             text += f"📅 ID: {topic.get('id')}\n\n"
             
             keyboard.append([
@@ -798,8 +798,8 @@ class MentorMatchBot:
             ])
         
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
         await query.edit_message_text(text, reply_markup=reply_markup)
     
     def run(self):
@@ -807,5 +807,5 @@ class MentorMatchBot:
         self.application.run_polling()
 
 if __name__ == "__main__":
-    bot = MentorMatchBot()
-    bot.run()
+        bot = MentorMatchBot()
+        bot.run()
