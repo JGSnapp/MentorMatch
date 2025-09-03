@@ -16,6 +16,8 @@ CREATE TABLE users (
   username        TEXT,
   role            VARCHAR(20) NOT NULL, -- 'student' | 'supervisor' | 'admin'
   embeddings      TEXT,
+  consent_personal BOOLEAN,
+  consent_private  BOOLEAN,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -32,7 +34,21 @@ CREATE TABLE student_profiles (
   interests       TEXT, -- JSON/CSV
   cv              TEXT,
   requirements    TEXT,
-  assignments     TEXT  -- JSON summary for UI
+  assignments     TEXT,  -- JSON summary for UI
+  skills_to_learn TEXT,
+  achievements    TEXT,
+  supervisor_pref TEXT,
+  groundwork      TEXT,
+  wants_team      BOOLEAN,
+  team_role       TEXT,
+  team_needs      TEXT,
+  apply_master    BOOLEAN,
+  workplace       TEXT,
+  preferred_team_track TEXT,
+  dev_track       BOOLEAN,
+  science_track   BOOLEAN,
+  startup_track   BOOLEAN,
+  final_work_pref TEXT
 );
 
 CREATE TABLE supervisor_profiles (

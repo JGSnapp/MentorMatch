@@ -27,7 +27,7 @@
 </head>
 <body>
   <h1>MentorMatch — админка (MVP)</h1>
-  <p class='muted'>Импорт из Google Sheets, добавление научруков и тем, просмотр последних записей и заглушка подбора.</p>
+  <p class='muted'>Импорт из Google Sheets, добавление научных руководителей и тем, просмотр последних записей и заглушка подбора.</p>
 
   {% if msg %}<div class='msg'>{{ msg }}</div>{% endif %}
 
@@ -46,7 +46,7 @@
     </div>
 
     <div class='card'>
-      <h3>Добавить научрука</h3>
+      <h3>Добавить научного руководителя</h3>
       <form method='post' action='/add-supervisor'>
         <label>ФИО <input type='text' name='full_name' required></label>
         <label>Email <input type='text' name='email'></label>
@@ -56,7 +56,7 @@
         <label>Лимит студентов <input type='number' name='capacity' min='0'></label>
         <label>Требования <textarea name='requirements'></textarea></label>
         <label>Интересы <textarea name='interests'></textarea></label>
-        <button type='submit'>Сохранить научрука</button>
+        <button type='submit'>Сохранить научного руководителя</button>
       </form>
     </div>
 
@@ -87,7 +87,7 @@
         <select name='kind'>
           <option value='topics' {{ 'selected' if kind=='topics' else '' }}>Темы</option>
           <option value='students' {{ 'selected' if kind=='students' else '' }}>Студенты</option>
-          <option value='supervisors' {{ 'selected' if kind=='supervisors' else '' }}>Научруки</option>
+          <option value='supervisors' {{ 'selected' if kind=='supervisors' else '' }}>Научные руководители</option>
         </select>
       </label>
       <label>Смещение (offset)
@@ -98,7 +98,7 @@
     <div class='tabs' style='margin-top:10px;'>
       <a href='/?kind=topics' class='{{ 'active' if kind=='topics' else '' }}'>Темы</a>
       <a href='/?kind=students' class='{{ 'active' if kind=='students' else '' }}'>Студенты</a>
-      <a href='/?kind=supervisors' class='{{ 'active' if kind=='supervisors' else '' }}'>Научруки</a>
+      <a href='/?kind=supervisors' class='{{ 'active' if kind=='supervisors' else '' }}'>Научные руководители</a>
     </div>
     <div class='list'>
       {% if kind == 'topics' %}
@@ -132,5 +132,12 @@
     <p class='muted'>Пока возвращает заготовку JSON; позже подключим скоринг/LLM.</p>
     <p class='muted'>JSON API: <code>/latest?kind=topics&offset=0</code></p>
   </div>
-</body>
+  <div class="card" style="margin-top:16px;">
+    <h3>????????? ???? ??? ???????? (LLM/??????)</h3>
+    <form method="post" action="/match-student">
+      <label>Student user_id <input type="number" name="student_user_id" required></label>
+      <button type="submit">????????? ????</button>
+    </form>
+    <p class="muted">???? ????? ???????? ???, ??? ????? ??????? (seeking_role=student).</p>
+  </div></body>
 </html>

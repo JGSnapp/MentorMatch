@@ -1,811 +1,459 @@
 import os
 import logging
+from typing import Optional, Dict, Any, List
+
 import aiohttp
-import asyncio
-from typing import Dict, Any, Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения
+
 load_dotenv()
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-# Состояния для ConversationHandler
-CHOOSING_ACTION, ADDING_TOPIC, ADDING_SUPERVISOR, IMPORTING_SHEET = range(4)
-
-# Состояния для добавления темы
-TOPIC_TITLE, TOPIC_DESCRIPTION, TOPIC_OUTCOMES, TOPIC_SKILLS, TOPIC_ROLE = range(4, 9)
-
-# Состояния для добавления научрука
-SUPERVISOR_NAME, SUPERVISOR_EMAIL, SUPERVISOR_USERNAME, SUPERVISOR_POSITION, SUPERVISOR_DEGREE, SUPERVISOR_CAPACITY, SUPERVISOR_REQUIREMENTS, SUPERVISOR_INTERESTS = range(9, 17)
 
 class MentorMatchBot:
-    def __init__(self):
-        self.token = os.getenv('TELEGRAM_BOT_TOKEN')
-        if not self.token:
-            raise ValueError("TELEGRAM_BOT_TOKEN не найден в переменных окружения")
-        
+    def __init__(self) -> None:
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        if not token:
+            raise ValueError('TELEGRAM_BOT_TOKEN не задан в окружении')
         self.server_url = os.getenv('SERVER_URL', 'http://localhost:8000')
-        self.application = Application.builder().token(self.token).build()
-        self.setup_handlers()
-        
-        # Временное хранилище данных пользователей
-        self.user_data: Dict[int, Dict[str, Any]] = {}
-        
-    async def api_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Optional[Dict]:
-        """Выполняет HTTP запрос к серверу"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{self.server_url}{endpoint}"
-                
-                if method.upper() == 'GET':
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            return await response.json()
-                        else:
-                            logger.error(f"API GET error: {response.status}")
-                            return None
-                elif method.upper() == 'POST':
-                    async with session.post(url, data=data) as response:
-                        if response.status in [200, 303]:
-                            return {'status': 'success'}
-                        else:
-                            logger.error(f"API POST error: {response.status}")
-                            return None
-        except Exception as e:
-            logger.error(f"API request error: {e}")
-            return None
-    
-    def setup_handlers(self):
-        """Настраивает обработчики команд"""
-        
-        # Основные команды
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("cancel", self.cancel_command))
-        
-        # Conversation handler для добавления темы
-        topic_conv_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.add_topic_start, pattern='^add_topic$')],
-            states={
-                TOPIC_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_topic_title)],
-                TOPIC_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_topic_description)],
-                TOPIC_OUTCOMES: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_topic_outcomes)],
-                TOPIC_SKILLS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_topic_skills)],
-                TOPIC_ROLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_topic_role)],
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel_command)],
-        )
-        self.application.add_handler(topic_conv_handler)
-        
-        # Conversation handler для добавления научрука
-        supervisor_conv_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.add_supervisor_start, pattern='^add_supervisor$')],
-            states={
-                SUPERVISOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_name)],
-                SUPERVISOR_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_email)],
-                SUPERVISOR_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_username)],
-                SUPERVISOR_POSITION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_position)],
-                SUPERVISOR_DEGREE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_degree)],
-                SUPERVISOR_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_capacity)],
-                SUPERVISOR_REQUIREMENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_requirements)],
-                SUPERVISOR_INTERESTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_supervisor_interests)],
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel_command)],
-        )
-        self.application.add_handler(supervisor_conv_handler)
-        
-        # Обработчики callback кнопок
-        self.application.add_handler(CallbackQueryHandler(self.handle_callback))
-        
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /start"""
-        user_id = update.effective_user.id
-        
-        # Получаем последние темы с сервера
-        topics_data = await self.api_request('GET', '/latest?kind=topics')
-        
-        keyboard = [
-            [InlineKeyboardButton("📚 Добавить тему", callback_data="add_topic")],
-            [InlineKeyboardButton("👨‍🏫 Добавить научрука", callback_data="add_supervisor")],
-            [InlineKeyboardButton("🔍 Найти кандидатов", callback_data="find_candidates")],
-            [InlineKeyboardButton("📊 Импорт из Google Sheets", callback_data="import_sheet")],
-            [InlineKeyboardButton("👥 Просмотреть студентов", callback_data="view_students")],
-            [InlineKeyboardButton("👨‍🏫 Просмотреть научруков", callback_data="view_supervisors")],
-            [InlineKeyboardButton("📝 Просмотреть темы", callback_data="view_topics")],
-        ]
-        
-        if topics_data:
-            keyboard.append([InlineKeyboardButton("📋 Последние темы", callback_data="show_topics")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Проверяем, откуда пришел запрос
-        if update.callback_query:
-            # Если это callback query, редактируем сообщение
-            await update.callback_query.edit_message_text(
-                "🤖 **Добро пожаловать в MentorMatch!**\n\n"
-                "Выберите действие:",
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-        else:
-            # Если это обычная команда, отправляем новое сообщение
-        await update.message.reply_text(
-                "🤖 **Добро пожаловать в MentorMatch!**\n\n"
-            "Выберите действие:",
-                parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
-        
-        return CHOOSING_ACTION
-    
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /help"""
-        help_text = (
-            "📖 **Справка по командам:**\n\n"
-            "/start - Главное меню\n"
-            "/help - Эта справка\n"
-            "/cancel - Отменить текущее действие\n\n"
-            "**Возможности бота:**\n"
-            "• Добавление тем исследований\n"
-            "• Добавление научных руководителей\n"
-            "• Поиск кандидатов по темам\n"
-            "• Просмотр последних добавлений"
-        )
-        await update.message.reply_text(help_text, parse_mode='Markdown')
-    
-    async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отменяет текущее действие"""
-        user_id = update.effective_user.id
-        
-        # Очищаем данные пользователя
-        if user_id in self.user_data:
-            del self.user_data[user_id]
-        
-        await update.message.reply_text(
-            "❌ Действие отменено. Используйте /start для возврата в главное меню.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
-        return ConversationHandler.END
-    
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатывает callback кнопки"""
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == "back_to_main":
-            await self.start_command(update, context)
-            return CHOOSING_ACTION
-        elif query.data == "show_topics":
-            await self.show_topics(update, context)
-        elif query.data.startswith("topic_"):
-            topic_id = int(query.data.split("_")[1])
-            await self.show_topic_candidates(update, context, topic_id)
-        elif query.data == "import_sheet":
-            await self.import_sheet_info(update, context)
-        elif query.data == "view_students":
-            await self.view_students(update, context)
-        elif query.data == "view_supervisors":
-            await self.view_supervisors(update, context)
-        elif query.data == "view_topics":
-            await self.view_topics(update, context)
-        elif query.data == "find_candidates":
-            await self.find_candidates(update, context)
-        elif query.data == "do_import_sheet":
-            await self.do_import_sheet(update, context)
-        elif query.data == "add_topic":
-            await self.add_topic_start(update, context)
-        elif query.data == "add_supervisor":
-            await self.add_supervisor_start(update, context)
-        else:
-            await query.edit_message_text("❌ Неизвестное действие")
-    
-    async def show_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает последние темы"""
-        query = update.callback_query
-        
-        topics_data = await self.api_request('GET', '/latest?kind=topics')
-        
-        if not topics_data:
-            await query.edit_message_text("📝 Темы не найдены.")
-            return
-        
-        text = "📚 Последние темы:\n\n"
-        keyboard = []
-        
-        for topic in topics_data[:10]:
-            role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
-            text += f"• {topic.get('title', 'Без названия')}\n"
-            text += f"  👥 Ищем: {role_text}\n"
-            text += f"  👤 Автор: {topic.get('author', 'Неизвестно')}\n\n"
-            
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"🔍 {topic.get('title', 'Без названия')[:30]}...",
-                    callback_data=f"topic_{topic.get('id')}"
-                )
-            ])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def show_topic_candidates(self, update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
-        """Показывает кандидатов для темы"""
-        query = update.callback_query
-        
-        # Получаем матчинг с сервера
-        match_data = await self.api_request('POST', '/match-topic', {
-            'topic_id': str(topic_id),
-            'target_role': 'student'
-        })
-        
-        if not match_data or match_data.get('status') != 'ok':
-            await query.edit_message_text("❌ Ошибка при поиске кандидатов.")
-            return
-        
-        topic_title = match_data.get('topic_title', 'Неизвестная тема')
-        items = match_data.get('items', [])
-        
-        text = f"🔍 Кандидаты для темы:\n{topic_title}\n\n"
-        
-        if not items:
-            text += "📝 Кандидаты не найдены."
-        else:
-            for item in items:
-                text += f"{item.get('rank')}. {item.get('full_name', 'Неизвестно')}\n"
-                if item.get('reason'):
-                    text += f"   💡 {item.get('reason')}\n"
-                text += "\n"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Назад к темам", callback_data="show_topics")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def add_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начинает процесс добавления темы"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        # Инициализируем данные пользователя
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
-        self.user_data[user_id]['topic'] = {}
-        
-        await query.edit_message_text(
-            "📚 **Добавление темы исследования**\n\n"
-            "Введите название темы:",
-            parse_mode='Markdown'
-        )
-        
-        return TOPIC_TITLE
-    
-    async def get_topic_title(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает название темы"""
-        user_id = update.effective_user.id
-        title = update.message.text
-        
-        self.user_data[user_id]['topic']['title'] = title
-        
-        await update.message.reply_text(
-            "📝 Введите описание темы:"
-        )
-        
-        return TOPIC_DESCRIPTION
-    
-    async def get_topic_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает описание темы"""
-        user_id = update.effective_user.id
-        description = update.message.text
-        
-        self.user_data[user_id]['topic']['description'] = description
-        
-        await update.message.reply_text(
-            "🎯 Введите ожидаемые результаты (или 'нет' для пропуска):"
-        )
-        
-        return TOPIC_OUTCOMES
-    
-    async def get_topic_outcomes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает ожидаемые результаты"""
-        user_id = update.effective_user.id
-        outcomes = update.message.text if update.message.text != 'нет' else None
-        
-        self.user_data[user_id]['topic']['expected_outcomes'] = outcomes
-        
-        await update.message.reply_text(
-            "🛠️ Введите требуемые навыки (или 'нет' для пропуска):"
-        )
-        
-        return TOPIC_SKILLS
-    
-    async def get_topic_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает требуемые навыки"""
-        user_id = update.effective_user.id
-        skills = update.message.text if update.message.text != 'нет' else None
-        
-        self.user_data[user_id]['topic']['required_skills'] = skills
-        
-        keyboard = [
-            [KeyboardButton("Студента")],
-            [KeyboardButton("Научрука")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
-        
-        await update.message.reply_text(
-            "👥 Выберите, кого ищем для этой темы:",
-            reply_markup=reply_markup
-        )
-        
-        return TOPIC_ROLE
-    
-    async def get_topic_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает роль и сохраняет тему"""
-        user_id = update.effective_user.id
-        role_text = update.message.text
-        
-        seeking_role = 'student' if role_text == "Студента" else 'supervisor'
-        
-        # Отправляем данные на сервер
-        topic_data = {
-            'title': self.user_data[user_id]['topic']['title'],
-            'description': self.user_data[user_id]['topic']['description'],
-            'expected_outcomes': self.user_data[user_id]['topic']['expected_outcomes'],
-            'required_skills': self.user_data[user_id]['topic']['required_skills'],
-            'seeking_role': seeking_role,
-            'author_full_name': f"User_{user_id}"  # Временное имя автора
-        }
-        
-        result = await self.api_request('POST', '/add-topic', topic_data)
-        
-        if result and result.get('status') == 'success':
-            await update.message.reply_text(
-                f"✅ **Тема успешно добавлена!**\n\n"
-                f"📚 Название: {self.user_data[user_id]['topic']['title']}\n"
-                f"👥 Ищем: {seeking_role}\n\n"
-                f"Используйте /start для возврата в главное меню.",
-                parse_mode='Markdown',
-                reply_markup=ReplyKeyboardRemove()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Ошибка при сохранении темы. Попробуйте позже.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        
-        # Очищаем данные пользователя
-        del self.user_data[user_id]
-        
-        return ConversationHandler.END
-    
-    async def add_supervisor_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начинает процесс добавления научрука"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        # Инициализируем данные пользователя
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
-        self.user_data[user_id]['supervisor'] = {}
-        
-        await query.edit_message_text(
-            "👨‍🏫 **Добавление научного руководителя**\n\n"
-            "Введите ФИО научного руководителя:",
-            parse_mode='Markdown'
-        )
-        
-        return SUPERVISOR_NAME
-    
-    async def get_supervisor_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает ФИО научрука"""
-        user_id = update.effective_user.id
-        name = update.message.text
-        
-        self.user_data[user_id]['supervisor']['full_name'] = name
-        
-        await update.message.reply_text(
-            "📧 Введите email (или 'нет' для пропуска):"
-        )
-        
-        return SUPERVISOR_EMAIL
-    
-    async def get_supervisor_email(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает email научрука"""
-        user_id = update.effective_user.id
-        email = update.message.text if update.message.text != 'нет' else None
-        
-        self.user_data[user_id]['supervisor']['email'] = email
-        
-        await update.message.reply_text(
-            "👤 Введите username в Telegram (или 'нет' для пропуска):"
-        )
-        
-        return SUPERVISOR_USERNAME
-    
-    async def get_supervisor_username(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает username научрука"""
-        user_id = update.effective_user.id
-        username = update.message.text if update.message.text != 'нет' else None
-        
-        self.user_data[user_id]['supervisor']['username'] = username
-        
-        await update.message.reply_text(
-            "🏢 Введите должность:"
-        )
-        
-        return SUPERVISOR_POSITION
-    
-    async def get_supervisor_position(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает должность научрука"""
-        user_id = update.effective_user.id
-        position = update.message.text
-        
-        self.user_data[user_id]['supervisor']['position'] = position
-        
-        await update.message.reply_text(
-            "🎓 Введите ученую степень (или 'нет' для пропуска):"
-        )
-        
-        return SUPERVISOR_DEGREE
-    
-    async def get_supervisor_degree(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает ученую степень научрука"""
-        user_id = update.effective_user.id
-        degree = update.message.text if update.message.text != 'нет' else None
-        
-        self.user_data[user_id]['supervisor']['degree'] = degree
-        
-        await update.message.reply_text(
-            "👥 Введите количество мест для студентов:"
-        )
-        
-        return SUPERVISOR_CAPACITY
-    
-    async def get_supervisor_capacity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает количество мест"""
-        user_id = update.effective_user.id
-        try:
-            capacity = int(update.message.text)
-            self.user_data[user_id]['supervisor']['capacity'] = capacity
-        except ValueError:
-            await update.message.reply_text("❌ Введите число. Попробуйте снова:")
-            return SUPERVISOR_CAPACITY
-        
-        await update.message.reply_text(
-            "📋 Введите требования к студентам (или 'нет' для пропуска):"
-        )
-        
-        return SUPERVISOR_REQUIREMENTS
-    
-    async def get_supervisor_requirements(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает требования к студентам"""
-        user_id = update.effective_user.id
-        requirements = update.message.text if update.message.text != 'нет' else None
-        
-        self.user_data[user_id]['supervisor']['requirements'] = requirements
-        
-        await update.message.reply_text(
-            "🔬 Введите научные интересы:"
-        )
-        
-        return SUPERVISOR_INTERESTS
-    
-    async def get_supervisor_interests(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получает научные интересы и сохраняет научрука"""
-        user_id = update.effective_user.id
-        interests = update.message.text if update.message.text != 'нет' else None
-        
-        self.user_data[user_id]['supervisor']['interests'] = interests
-        
-        # Отправляем данные на сервер
-        supervisor_data = {
-            'full_name': self.user_data[user_id]['supervisor']['full_name'],
-            'email': self.user_data[user_id]['supervisor']['email'],
-            'username': self.user_data[user_id]['supervisor']['username'],
-            'position': self.user_data[user_id]['supervisor']['position'],
-            'degree': self.user_data[user_id]['supervisor']['degree'],
-            'capacity': str(self.user_data[user_id]['supervisor']['capacity']),
-            'requirements': self.user_data[user_id]['supervisor']['requirements'],
-            'interests': self.user_data[user_id]['supervisor']['interests']
-        }
-        
-        result = await self.api_request('POST', '/add-supervisor', supervisor_data)
-        
-        if result and result.get('status') == 'success':
-            await update.message.reply_text(
-                f"✅ **Научный руководитель успешно добавлен!**\n\n"
-                f"👨‍🏫 ФИО: {self.user_data[user_id]['supervisor']['full_name']}\n"
-                f"🏢 Должность: {self.user_data[user_id]['supervisor']['position']}\n"
-                f"👥 Мест: {self.user_data[user_id]['supervisor']['capacity']}\n\n"
-                f"Используйте /start для возврата в главное меню.",
-                parse_mode='Markdown',
-                reply_markup=ReplyKeyboardRemove()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Ошибка при сохранении научного руководителя. Попробуйте позже.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        
-        # Очищаем данные пользователя
-        del self.user_data[user_id]
-        
-        return ConversationHandler.END
-    
-    async def find_candidates(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Находит кандидатов по темам"""
-        query = update.callback_query
-        
-        # Получаем темы с сервера
-        topics_data = await self.api_request('GET', '/latest?kind=topics')
-        
-        if not topics_data:
-                    await query.edit_message_text("📝 Темы не найдены.")
-                    return
-                
-                # Создаем кнопки для выбора темы
-                keyboard = []
-        for topic in topics_data[:10]:
-            role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
-                    keyboard.append([
-                        InlineKeyboardButton(
-                    f"📚 {topic.get('title', 'Без названия')[:30]}... ({role_text})",
-                    callback_data=f"topic_{topic.get('id')}"
-                        )
-                    ])
-                
-                keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-            "🔍 Выберите тему для поиска кандидатов:\n\n"
-                    "Нажмите на тему, чтобы увидеть подходящих кандидатов.",
-                    reply_markup=reply_markup
-                )
-                
-    async def import_sheet_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает информацию об импорте из Google Sheets"""
-        query = update.callback_query
-        
-        # Получаем статус через API сервера
-        status_data = await self.api_request('GET', '/api/sheets-status')
-        
-        if status_data and status_data.get('status') == 'configured':
-            # Переменные настроены - показываем кнопку импорта
-            text = (
-                "📊 Импорт из Google Sheets\n\n"
-                "✅ Переменные окружения настроены:\n"
-                f"• SPREADSHEET_ID: {status_data.get('spreadsheet_id', 'N/A')}\n"
-                f"• SERVICE_ACCOUNT_FILE: {status_data.get('service_account_file', 'N/A')}\n\n"
-                "Нажмите кнопку ниже для импорта данных из Google Sheets.\n\n"
-                "Что импортируется:\n"
-                "• Студенты с профилями\n"
-                "• Темы исследований\n"
-                "• Навыки и интересы"
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("🔄 Импортировать данные", callback_data="do_import_sheet")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-            ]
-        else:
-            # Переменные не настроены - показываем инструкции
-            missing_vars = status_data.get('missing_vars', ['SPREADSHEET_ID', 'SERVICE_ACCOUNT_FILE']) if status_data else ['SPREADSHEET_ID', 'SERVICE_ACCOUNT_FILE']
-            
-            text = (
-                "📊 Импорт из Google Sheets\n\n"
-                "❌ Переменные окружения не настроены:\n"
-                f"• Отсутствуют: {', '.join(missing_vars)}\n\n"
-                "Для настройки добавьте в .env:\n"
-                "• SPREADSHEET_ID=your_spreadsheet_id\n"
-                "• SERVICE_ACCOUNT_FILE=service-account.json\n\n"
-                "Что импортируется:\n"
-                "• Студенты с профилями\n"
-                "• Темы исследований\n"
-                "• Навыки и интересы"
-            )
-            
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def do_import_sheet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Выполняет импорт данных из Google Sheets"""
-        query = update.callback_query
-        
-        # Показываем сообщение о начале импорта
-        await query.edit_message_text(
-            "🔄 Импорт данных из Google Sheets...\n\n"
-            "⏳ Пожалуйста, подождите...",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
-            ]])
-        )
-        
-        try:
-            # Получаем SPREADSHEET_ID из переменных окружения сервера
-            status_data = await self.api_request('GET', '/api/sheets-status')
-            if not status_data or status_data.get('status') != 'configured':
-                await query.edit_message_text(
-                    "❌ Ошибка: переменные окружения не настроены",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
-            ]])
-                )
-                return
-            
-            # Получаем полную конфигурацию Google Sheets для импорта
-            config_data = await self.api_request('GET', '/api/sheets-config')
-            if not config_data or config_data.get('status') != 'configured':
-                await query.edit_message_text(
-                    "❌ Ошибка: конфигурация Google Sheets не найдена",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
-                    ]])
-                )
-                    return
-                
-            # Выполняем импорт через API
-            import_result = await self.api_request('POST', '/api/import-sheet', {
-                'spreadsheet_id': config_data.get('spreadsheet_id'),
-                'sheet_name': None  # Используем первый лист
-            })
-            
-            if import_result and import_result.get('status') == 'success':
-                stats = import_result.get('stats', {})
-                message = (
-                    "✅ Импорт успешно завершен!\n\n"
-                    f"📊 Результаты:\n"
-                    f"• Новых пользователей: +{stats.get('inserted_users', 0)}\n"
-                    f"• Новых профилей: +{stats.get('inserted_profiles', 0)}\n"
-                    f"• Новых тем: +{stats.get('inserted_topics', 0)}\n\n"
-                    f"📈 Статистика:\n"
-                    f"• Всего строк в таблице: {stats.get('total_rows_in_sheet', 0)}\n"
-                    f"• Всего студентов в БД: {stats.get('total_students_in_db', 0)}\n\n"
-                    f"💬 {import_result.get('message', '')}"
-                )
-            else:
-                error_msg = import_result.get('message', 'Неизвестная ошибка') if import_result else 'Ошибка соединения с сервером'
-                message = f"❌ Ошибка при импорте:\n{error_msg}"
-            
-            keyboard = [
-                [InlineKeyboardButton("🔄 Импортировать еще раз", callback_data="do_import_sheet")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")]
-            ]
-                
-                await query.edit_message_text(
-                message,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                
-        except Exception as e:
-            await query.edit_message_text(
-                f"❌ Ошибка при импорте:\n{str(e)}",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Назад", callback_data="import_sheet")
-                ]])
-            )
-    
-    async def view_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает список студентов"""
-        query = update.callback_query
-        
-        students_data = await self.api_request('GET', '/api/students?limit=10')
-        
-        if not students_data:
-            await query.edit_message_text("👥 Студенты не найдены.")
-            return
-        
-        text = "👥 Список студентов:\n\n"
-        keyboard = []
-        
-        for student in students_data:
-            text += f"{student.get('full_name', 'Без имени')}\n"
-            if student.get('program'):
-                text += f"📚 Программа: {student.get('program')}\n"
-            if student.get('skills'):
-                text += f"🛠️ Навыки: {student.get('skills')}\n"
-            if student.get('interests'):
-                text += f"🔬 Интересы: {student.get('interests')}\n"
-            text += f"📅 ID: {student.get('id')}\n\n"
-            
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"👤 {student.get('full_name', 'Без имени')[:30]}...",
-                    callback_data=f"student_{student.get('id')}"
-                )
-            ])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def view_supervisors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает список научных руководителей"""
-        query = update.callback_query
-        
-        supervisors_data = await self.api_request('GET', '/api/supervisors?limit=10')
-        
-        if not supervisors_data:
-                    await query.edit_message_text("👨‍🏫 Научные руководители не найдены.")
-                    return
-                
-        text = "👨‍🏫 Список научных руководителей:\n\n"
-        keyboard = []
-        
-        for supervisor in supervisors_data:
-            text += f"{supervisor.get('full_name', 'Без имени')}\n"
-            if supervisor.get('position'):
-                text += f"🏢 Должность: {supervisor.get('position')}\n"
-            if supervisor.get('degree'):
-                text += f"🎓 Степень: {supervisor.get('degree')}\n"
-            if supervisor.get('capacity'):
-                text += f"👥 Свободных мест: {supervisor.get('capacity')}\n"
-            if supervisor.get('interests'):
-                text += f"🔬 Интересы: {supervisor.get('interests')}\n"
-            text += f"📅 ID: {supervisor.get('id')}\n\n"
-            
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"👨‍🏫 {supervisor.get('full_name', 'Без имени')[:30]}...",
-                    callback_data=f"supervisor_{supervisor.get('id')}"
-                )
-            ])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    async def view_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает список тем"""
-        query = update.callback_query
-        
-        topics_data = await self.api_request('GET', '/api/topics?limit=10')
-        
-        if not topics_data:
-                    await query.edit_message_text("📝 Темы не найдены.")
-                    return
-                
-        text = "📝 Список тем:\n\n"
-        keyboard = []
-        
-        for topic in topics_data:
-            role_text = "студента" if topic.get('seeking_role') == 'student' else "научрука"
-            text += f"{topic.get('title', 'Без названия')}\n"
-            text += f"👤 Автор: {topic.get('author', 'Неизвестно')}\n"
-                    text += f"👥 Ищем: {role_text}\n"
-            text += f"📅 ID: {topic.get('id')}\n\n"
-            
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"📚 {topic.get('title', 'Без названия')[:30]}...",
-                    callback_data=f"topic_{topic.get('id')}"
-                )
-            ])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    
-    def run(self):
-        """Запускает бота"""
-        self.application.run_polling()
+        self.app = Application.builder().token(token).build()
+        self._setup_handlers()
 
-if __name__ == "__main__":
-        bot = MentorMatchBot()
-        bot.run()
+    def run(self) -> None:
+        self.app.run_polling()
+
+    def _setup_handlers(self) -> None:
+        self.app.add_handler(CommandHandler('start', self.cmd_start2))
+        self.app.add_handler(CommandHandler('help', self.cmd_help))
+
+        # Lists (menu with add buttons)
+        # Support pagination via optional suffix _<offset>
+        self.app.add_handler(CallbackQueryHandler(self.cb_list_students_nav, pattern=r'^list_students(?:_\d+)?$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_list_supervisors_nav, pattern=r'^list_supervisors(?:_\d+)?$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_list_topics_nav, pattern=r'^list_topics(?:_\d+)?$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_import_students, pattern=r'^import_students$'))
+        # Add flows (callbacks)
+        self.app.add_handler(CallbackQueryHandler(self.cb_add_student_info, pattern=r'^add_student$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_add_supervisor_start, pattern=r'^add_supervisor$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_add_topic_start, pattern=r'^add_topic$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_add_topic_choose, pattern=r'^add_topic_role_(student|supervisor)$'))
+
+        # Profiles
+        self.app.add_handler(CallbackQueryHandler(self.cb_view_student, pattern=r'^student_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_view_supervisor, pattern=r'^supervisor_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_view_topic, pattern=r'^topic_\d+$'))
+
+        # Matching actions
+        self.app.add_handler(CallbackQueryHandler(self.cb_match_student, pattern=r'^match_student_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_match_supervisor, pattern=r'^match_supervisor_\d+$'))
+
+        # Back to main
+        self.app.add_handler(CallbackQueryHandler(self.cb_back, pattern=r'^back_to_main$'))
+        # Error handler
+        self.app.add_error_handler(self.on_error)
+        # Text input handler for simple add flows
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
+
+    # Compatibility wrapper used by handler registration
+    async def cmd_start2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        return await self.cmd_start(update, context)
+
+    async def _api_get(self, path: str) -> Optional[Dict[str, Any]]:
+        url = f'{self.server_url}{path}'
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=20) as r:
+                    if r.status == 200:
+                        return await r.json()
+                    logger.error('GET %s -> %s', url, r.status)
+        except Exception as e:
+            logger.exception('GET %s failed: %s', url, e)
+        return None
+
+    async def _api_post(self, path: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        url = f'{self.server_url}{path}'
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(url, data=data, timeout=60) as r:
+                    if r.status == 200:
+                        return await r.json()
+                    if r.status == 303:
+                        return {'status': 'success'}
+                    logger.error('POST %s -> %s', url, r.status)
+        except Exception as e:
+            logger.exception('POST %s failed: %s', url, e)
+        return None
+
+    # Commands
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        kb = [
+            [InlineKeyboardButton('👨‍🎓 Студенты', callback_data='list_students')],
+            [InlineKeyboardButton('🧑‍🏫 Научные руководители', callback_data='list_supervisors')],
+            [InlineKeyboardButton('📚 Темы', callback_data='list_topics')],
+        ]
+        text = 'Выберите раздел:'
+        if update.message:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        elif update.callback_query:
+            # Возврат из callback — редактируем текущее сообщение
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text('Разделы: Студенты, Научные руководители, Темы. В профиле студента — кнопка Подобрать тему. В профиле темы (где нужен научный руководитель) — Подобрать научного руководителя.')
+
+    # Lists
+    async def cb_list_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        data = await self._api_get('/api/students?limit=10') or []
+        lines: List[str] = ['Студенты:']
+        kb: List[List[InlineKeyboardButton]] = []
+        for s in data:
+            lines.append(f"• {s.get('full_name','–')} (id={s.get('id')})")
+            kb.append([InlineKeyboardButton(s.get('full_name','–')[:30], callback_data=f"student_{s.get('id')}")])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_list_supervisors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        data = await self._api_get('/api/supervisors?limit=10') or []
+        lines: List[str] = ['Научные руководители:']
+        kb: List[List[InlineKeyboardButton]] = []
+        for s in data:
+            lines.append(f"• {s.get('full_name','–')} (id={s.get('id')})")
+            kb.append([InlineKeyboardButton(s.get('full_name','–')[:30], callback_data=f"supervisor_{s.get('id')}")])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_list_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        data = await self._api_get('/api/topics?limit=10') or []
+        lines: List[str] = ['Темы:']
+        kb: List[List[InlineKeyboardButton]] = []
+        for t in data:
+            title = (t.get('title') or '–')[:30]
+            lines.append(f"• {t.get('title','–')} (id={t.get('id')})")
+            kb.append([InlineKeyboardButton(title, callback_data=f"topic_{t.get('id')}")])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    # Profiles
+    async def cb_view_student(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        sid = int(q.data.split('_')[1])
+        s = await self._api_get(f'/api/students/{sid}')
+        if not s:
+            await q.edit_message_text('Не удалось загрузить профиль студента')
+            return
+        text = (
+            f"Студент: {s.get('full_name','–')}\n"
+            f"Username: {s.get('username') or '–'}\n"
+            f"Email: {s.get('email') or '–'}\n"
+            f"Направление: {s.get('program') or '–'}\n"
+            f"Навыки: {s.get('skills') or '–'}\n"
+            f"Интересы: {s.get('interests') or '–'}\n"
+            f"CV: {(s.get('cv') or '–')[:200]}\n"
+            f"ID: {s.get('id')}\n"
+        )
+        kb = [
+            [InlineKeyboardButton('🧠 Подобрать тему', callback_data=f'match_student_{sid}')],
+            [InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')],
+        ]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_view_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        uid = int(q.data.split('_')[1])
+        s = await self._api_get(f'/api/supervisors/{uid}')
+        if not s:
+            await q.edit_message_text('Не удалось загрузить профиль научного руководителя')
+            return
+        text = (
+            f"Научный руководитель: {s.get('full_name','–')}\n"
+            f"Username: {s.get('username') or '–'}\n"
+            f"Email: {s.get('email') or '–'}\n"
+            f"Должность: {s.get('position') or '–'}\n"
+            f"Степень: {s.get('degree') or '–'}\n"
+            f"Вместимость: {s.get('capacity') or '–'}\n"
+            f"Интересы: {s.get('interests') or '–'}\n"
+            f"ID: {s.get('id')}\n"
+        )
+        kb = [[InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')]]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_view_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        tid = int(q.data.split('_')[1])
+        t = await self._api_get(f'/api/topics/{tid}')
+        if not t:
+            await q.edit_message_text('Не удалось загрузить тему')
+            return
+        role = t.get('seeking_role')
+        text = (
+            f"Тема: {t.get('title','–')}\n"
+            f"Автор: {t.get('author','–')}\n"
+            f"Кого ищем: {role}\n"
+            f"Описание: {(t.get('description') or '–')[:500]}\n"
+            f"Ожидаемые результаты: {(t.get('expected_outcomes') or '–')[:400]}\n"
+            f"Требуемые навыки: {t.get('required_skills') or '–'}\n"
+            f"ID: {t.get('id')}\n"
+        )
+        kb: List[List[InlineKeyboardButton]] = []
+        if role == 'supervisor':
+            kb.append([InlineKeyboardButton('🧑‍🏫 Подобрать научного руководителя', callback_data=f'match_supervisor_{tid}')])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    # Matching
+    async def cb_match_student(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        sid = int(q.data.split('_')[2])
+        res = await self._api_post('/match-student', data={'student_user_id': sid})
+        if not res or res.get('status') != 'ok':
+            await q.edit_message_text('Ошибка подбора темы для студента')
+            return
+        items = res.get('items', [])
+        lines = [f'Топ‑5 тем для студента #{sid}:']
+        for it in items:
+            lines.append(f"#{it.get('rank')}. {it.get('title','–')} — {it.get('reason','')}")
+        kb = [[InlineKeyboardButton('⬅️ К студенту', callback_data=f'student_{sid}')]]
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    # Import students from Google Sheets
+    async def cb_import_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        cfg = await self._api_get('/api/sheets-config')
+        if not cfg or cfg.get('status') != 'configured':
+            text = 'Google Sheets не настроен. Укажите SPREADSHEET_ID и SERVICE_ACCOUNT_FILE на сервере.'
+            kb = [[InlineKeyboardButton('👨‍🎓 К студентам', callback_data='list_students')]]
+            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+            return
+        sid = cfg.get('spreadsheet_id')
+        res = await self._api_post('/api/import-sheet', data={'spreadsheet_id': sid})
+        if not res or res.get('status') != 'success':
+            msg = (res or {}).get('message') or 'Ошибка импорта'
+            text = f'❌ Импорт не выполнен: {msg}'
+        else:
+            stats = res.get('stats', {})
+            text = (
+                '✅ Импорт выполнен.\n'
+                f"Пользователи: +{stats.get('inserted_users', 0)}\n"
+                f"Профили: +{stats.get('inserted_profiles', stats.get('upserted_profiles', 0))}\n"
+                f"Темы: +{stats.get('inserted_topics', 0)}"
+            )
+        kb = [[InlineKeyboardButton('👨‍🎓 К студентам', callback_data='list_students')]]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    # List menus with add buttons (new handlers)
+    async def cb_list_students_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        data = await self._api_get('/api/students?limit=10') or []
+        lines: List[str] = ['Студенты:']
+        kb: List[List[InlineKeyboardButton]] = [
+            [InlineKeyboardButton('➕ Добавить студента', callback_data='add_student')],
+            [InlineKeyboardButton('📥 Импорт из Google-таблиц', callback_data='import_students')],
+        ]
+        for s in data:
+            lines.append(f"• {s.get('full_name','–')} (id={s.get('id')})")
+            kb.append([InlineKeyboardButton((s.get('full_name','–')[:30]), callback_data=f"student_{s.get('id')}")])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_list_supervisors_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        data = await self._api_get('/api/supervisors?limit=10') or []
+        lines: List[str] = ['Научные руководители:']
+        kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Научный руководитель', callback_data='add_supervisor')]]
+        for s in data:
+            lines.append(f"• {s.get('full_name','–')} (id={s.get('id')})")
+            kb.append([InlineKeyboardButton((s.get('full_name','–')[:30]), callback_data=f"supervisor_{s.get('id')}")])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_list_topics_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        data = await self._api_get('/api/topics?limit=10') or []
+        lines: List[str] = ['Темы:']
+        kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Тема', callback_data='add_topic')]]
+        for t in data:
+            lines.append(f"• {t.get('title','–')} (id={t.get('id')})")
+            kb.append([InlineKeyboardButton(((t.get('title') or '–')[:30]), callback_data=f"topic_{t.get('id')}")])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    # List menus with pagination navigation
+    async def cb_list_students_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        offset = 0
+        try:
+            if '_' in (q.data or '') and q.data != 'list_students':
+                offset = int(q.data.rsplit('_', 1)[1])
+        except Exception:
+            offset = 0
+        limit = 10
+        data = await self._api_get(f'/api/students?limit={limit}&offset={max(0, offset)}') or []
+        lines: List[str] = ['Студенты:']
+        kb: List[List[InlineKeyboardButton]] = [
+            [InlineKeyboardButton('➕ Добавить студента', callback_data='add_student')],
+            [InlineKeyboardButton('📥 Импорт из Google-таблиц', callback_data='import_students')],
+        ]
+        for s in data:
+            lines.append(f"• {s.get('full_name','–')} (id={s.get('id')})")
+            kb.append([InlineKeyboardButton((s.get('full_name','–')[:30]), callback_data=f"student_{s.get('id')}")])
+        nav: List[InlineKeyboardButton] = []
+        if offset > 0:
+            prev_off = max(0, offset - limit)
+            nav.append(InlineKeyboardButton('◀️', callback_data=f'list_students_{prev_off}'))
+        if len(data) == limit:
+            next_off = offset + limit
+            nav.append(InlineKeyboardButton('▶️', callback_data=f'list_students_{next_off}'))
+        if nav:
+            kb.append(nav)
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_list_supervisors_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        offset = 0
+        try:
+            if '_' in (q.data or '') and q.data != 'list_supervisors':
+                offset = int(q.data.rsplit('_', 1)[1])
+        except Exception:
+            offset = 0
+        limit = 10
+        data = await self._api_get(f'/api/supervisors?limit={limit}&offset={max(0, offset)}') or []
+        lines: List[str] = ['Научные руководители:']
+        kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Научный руководитель', callback_data='add_supervisor')]]
+        for s in data:
+            lines.append(f"• {s.get('full_name','–')} (id={s.get('id')})")
+            kb.append([InlineKeyboardButton((s.get('full_name','–')[:30]), callback_data=f"supervisor_{s.get('id')}")])
+        nav: List[InlineKeyboardButton] = []
+        if offset > 0:
+            prev_off = max(0, offset - limit)
+            nav.append(InlineKeyboardButton('◀️', callback_data=f'list_supervisors_{prev_off}'))
+        if len(data) == limit:
+            next_off = offset + limit
+            nav.append(InlineKeyboardButton('▶️', callback_data=f'list_supervisors_{next_off}'))
+        if nav:
+            kb.append(nav)
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_list_topics_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        offset = 0
+        try:
+            if '_' in (q.data or '') and q.data != 'list_topics':
+                offset = int(q.data.rsplit('_', 1)[1])
+        except Exception:
+            offset = 0
+        limit = 10
+        data = await self._api_get(f'/api/topics?limit={limit}&offset={max(0, offset)}') or []
+        lines: List[str] = ['Темы:']
+        kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Тема', callback_data='add_topic')]]
+        for t in data:
+            title = (t.get('title') or '–')[:30]
+            lines.append(f"• {t.get('title','–')} (id={t.get('id')})")
+            kb.append([InlineKeyboardButton(title, callback_data=f"topic_{t.get('id')}")])
+        nav: List[InlineKeyboardButton] = []
+        if offset > 0:
+            prev_off = max(0, offset - limit)
+            nav.append(InlineKeyboardButton('◀️', callback_data=f'list_topics_{prev_off}'))
+        if len(data) == limit:
+            next_off = offset + limit
+            nav.append(InlineKeyboardButton('▶️', callback_data=f'list_topics_{next_off}'))
+        if nav:
+            kb.append(nav)
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    # Add flows (simple)
+    async def cb_add_student_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        text = 'Добавление студентов выполняется через Google форму и импорт в админке.'
+        kb = [[InlineKeyboardButton('👨‍🎓 К студентам', callback_data='list_students')]]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_add_supervisor_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        context.user_data['awaiting'] = 'add_supervisor_name'
+        await q.edit_message_text('Введите ФИО научного руководителя сообщением. Для отмены — /start')
+
+    async def cb_add_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        kb = [
+            [InlineKeyboardButton('🎓 Ищу студента', callback_data='add_topic_role_student')],
+            [InlineKeyboardButton('🧑‍🏫 Ищу научного руководителя', callback_data='add_topic_role_supervisor')],
+            [InlineKeyboardButton('📚 К темам', callback_data='list_topics')],
+        ]
+        await q.edit_message_text('Выберите, кого ищет тема:', reply_markup=InlineKeyboardMarkup(kb))
+
+    async def cb_add_topic_choose(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        role = 'student' if q.data.endswith('_student') else 'supervisor'
+        context.user_data['awaiting'] = 'add_topic_title'
+        context.user_data['topic_role'] = role
+        await q.edit_message_text('Введите название темы сообщением. Для отмены — /start')
+
+    async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        awaiting = context.user_data.get('awaiting')
+        if not awaiting:
+            return
+        text = (update.message.text or '').strip()
+        if awaiting == 'add_supervisor_name':
+            payload = {
+                'full_name': text,
+                'email': None,
+                'username': getattr(update.effective_user, 'username', None) or None,
+            }
+            res = await self._api_post('/add-supervisor', data=payload)
+            context.user_data['awaiting'] = None
+            if res and res.get('status', 'success') in ('success', 'ok'):
+                await update.message.reply_text('Научный руководитель добавлен.', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🧑‍🏫 К научным руководителям', callback_data='list_supervisors')]]))
+            else:
+                await update.message.reply_text('Не удалось добавить научного руководителя. Попробуйте ещё раз или используйте веб-админку.')
+        elif awaiting == 'add_topic_title':
+            role = context.user_data.get('topic_role') or 'student'
+            payload = {
+                'title': text,
+                'seeking_role': role,
+                'author_full_name': (getattr(update.effective_user, 'full_name', None) or 'Unknown Supervisor'),
+            }
+            res = await self._api_post('/add-topic', data=payload)
+            context.user_data['awaiting'] = None
+            context.user_data.pop('topic_role', None)
+            if res and res.get('status', 'success') in ('success', 'ok'):
+                await update.message.reply_text('Тема добавлена.', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('📚 К темам', callback_data='list_topics')]]))
+            else:
+                await update.message.reply_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.')
+
+    async def cb_match_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        tid = int(q.data.split('_')[2])
+        res = await self._api_post('/match-topic', data={'topic_id': tid, 'target_role': 'supervisor'})
+        if not res or res.get('status') not in ('ok', 'success'):
+            await q.edit_message_text('Ошибка подбора руководителя для темы')
+            return
+        items = res.get('items', [])
+        lines = [f'Топ‑5 руководителей для темы #{tid}:']
+        for it in items:
+            lines.append(f"#{it.get('rank')}. {it.get('full_name','–')} — {it.get('reason','')}")
+        kb = [[InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')]]
+        await q.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup(kb))
+
+    # Back
+    async def cb_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        await self.cmd_start(update, context)
+
+    # Global error handler (чтобы не сыпались stacktrace в логи без обработки)
+    async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.exception('Bot error: %s', getattr(context, 'error', 'unknown'))
+
+
+if __name__ == '__main__':
+    bot = MentorMatchBot()
+    bot.run()

@@ -6,6 +6,7 @@ services:
       ports:
         - "8000:8000"
       environment:
+        - TEST_IMPORT=${TEST_IMPORT}
         - PROXY_API_KEY=${PROXY_API_KEY}
         - PROXY_BASE_URL=${PROXY_BASE_URL}
         - PROXY_MODEL=${PROXY_MODEL:-gpt-4o-mini}
@@ -23,7 +24,6 @@ services:
       volumes:
         - ./server:/app
         - ./templates:/templates
-        - ./templates:/app/templates
       depends_on:
         - postgres
       restart: unless-stopped
@@ -69,6 +69,10 @@ services:
       - "${PGADMIN_PORT:-8080}:80"
     depends_on:
       - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
 
 volumes:
   pgdata:
+  pgadmin_data:

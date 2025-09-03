@@ -1,119 +1,153 @@
-# MentorMatch — схема БД (v2)
-Экспорт: 28.08.2025
+# MentorMatch — Схема БД (актуальная)
 
-Ниже — пояснение каждой таблицы и поля. В скобках указаны типы столбцов и ключи/ссылки.
+Документ описывает текущую схему базы данных, которая применяется автоматически контейнером Postgres при первом запуске (см. `01_schema.sql`).
 
----
-
-## 1) users — пользователи (аккаунты)
-- **id** (bigint, PK): идентификатор пользователя.
-- **telegram_id** (bigint, UNIQUE): ID в Telegram для связи с ботом.
-- **full_name** (text): ФИО.
-- **email** (text), **username** (text): контакты.
-- **role** (varchar(20)): 'student' | 'supervisor' | 'admin'.
-- **embeddings** (text): сериализованный вектор профиля/интересов (JSON/CSV/base64).
-- **created_at**, **updated_at** (timestamp): аудит.
-
-## 2) student_profiles — профиль студента (1:1 с users)
-- **user_id** (bigint, PK, FK → users.id): владелец профиля.
-- **course** (smallint): курс.
-- **program**, **faculty**, **education** (text): учебная программа, факультет, образование.
-- **skills** (text): навыки (JSON/CSV).
-- **interests** (text): интересы (JSON/CSV).
-- **cv** (text): ссылка/описание резюме (как строка).
-- **requirements** (text): пожелания к темам/руководителю.
-- **assignments** (text): JSON-сводка по заданиям/оценкам для быстрого UI (опционально).
-
-## 3) supervisor_profiles — профиль научрука (1:1 с users)
-- **user_id** (bigint, PK, FK → users.id)
-- **position** (text), **degree** (text): должность, учёная степень.
-- **capacity** (int): сколько студентов готов взять.
-- **requirements** (text): требования к студентам.
-- **interests** (text): научные интересы/тематики.
-
-## 4) media_files — медиафайлы (метаданные + ключ объекта)
-- **id** (bigint, PK)
-- **owner_user_id** (bigint, FK → users.id, nullable): кто загрузил.
-- **object_key** (text): ключ в объектном хранилище (S3/MinIO/локально).
-- **provider** (varchar(20)): 's3' | 'tg' | 'local' | …
-- **mime_type** (text), **size_bytes** (bigint): тип и размер.
-- **created_at** (timestamp): когда загружен.
-**Индексы:** (owner_user_id), (object_key).
-
-## 5) topics — темы/проекты
-- **id** (bigint, PK)
-- **author_user_id** (bigint, FK → users.id): создатель темы (студент/научрук).
-- **title**, **description** (text): заголовок и описание темы.
-- **expected_outcomes** (text): ожидаемые результаты (артефакты/метрики).
-- **required_skills** (text): требуемые навыки.
-- **seeking_role** (varchar(20)): 'student' | 'supervisor' — кого ищем под тему.
-- **embeddings** (text): вектор темы.
-- **cover_media_id** (bigint, FK → media_files.id, nullable): обложка темы.
-- **is_active** (boolean): активна ли тема.
-- **created_at**, **updated_at** (timestamp).
-
-## 6) topic_candidates — кандидаты на тему (ранжирование)
-- **topic_id** (bigint, FK → topics.id)
-- **user_id** (bigint, FK → users.id)
-- **score** (float): коэффициент совпадения (эмбеддинги/LLM).
-- **is_primary** (boolean): отмеченный «основной» кандидат.
-- **approved** (boolean): решение по кандидату (одобрен/нет).
-- **rank** (smallint): позиция в топе.
-- **created_at** (timestamp): когда добавлен в кандидаты.
-**Ключи/индексы:** (topic_id, user_id) [unique] — составной PK; индексы по (topic_id, score) и (user_id).
-
-## 7) assignments — задания
-- **id** (bigint, PK)
-- **author_user_id** (bigint, FK → users.id): кто выдал (обычно научрук).
-- **topic_id** (bigint, FK → topics.id, nullable): к какой теме относится.
-- **title**, **description** (text): название и условие.
-- **due_at** (timestamp, nullable): дедлайн.
-- **max_score** (float, nullable): максимум баллов.
-- **is_optional** (boolean): опциональное/обязательное.
-- **attempts_limit** (int, nullable): лимит попыток (NULL = нет лимита).
-- **correct_answer** (text): эталонный ответ (для 'equals' или подсказок).
-- **check_type** (varchar(20)): 'compiler' | 'equals' | 'llm' | 'manual'.
-- **media_file_id** (bigint, FK → media_files.id, nullable): вложение/условие задания.
-- **created_at**, **updated_at** (timestamp).
-
-## 8) completed_assignments — выполненные задания (submission + оценка)
-- **assignment_id** (bigint, FK → assignments.id)
-- **student_user_id** (bigint, FK → users.id)
-- **solution_text** (text): текст решения (опционально).
-- **solution_media_file_id** (bigint, FK → media_files.id, nullable): файл решения (репорт/архив/видео и т.п.).
-- **score** (float, nullable): итоговая оценка.
-- **feedback** (text): комментарий проверяющего.
-- **submitted_at**, **graded_at** (timestamp): когда сдано/проверено.
-- **grader_user_id** (bigint, FK → users.id, nullable): кто проверил.
-- **created_at** (timestamp).
-**Ключи/индексы:** составной PK (assignment_id, student_user_id); индекс по student_user_id.
-
-## 9) chat_threads — треды чата
-- **id** (bigint, PK)
-- **user_a_id**, **user_b_id** (bigint, FK → users.id): участники диалога.
-- **topic_id** (bigint, FK → topics.id, nullable): если обсуждается конкретная тема.
-- **created_at**, **closed_at** (timestamp): время создания/закрытия.
-**Индексы:** по обоим участникам и по теме.
-
-## 10) chat_messages — сообщения чата
-- **id** (bigint, PK)
-- **thread_id** (bigint, FK → chat_threads.id): к какому треду относится.
-- **sender_user_id** (bigint, FK → users.id): отправитель.
-- **message_text** (text): текст сообщения.
-- **media_file_id** (bigint, FK → media_files.id, nullable): вложение (изображение/документ/видео).
-- **created_at** (timestamp).
-**Индексы:** по thread_id и sender_user_id.
+Версия: 2025‑09
 
 ---
 
-## Примечания по хранению медиа
-- Файлы хранятся вне БД (S3/MinIO/локальный диск), в БД — только метаданные (media_files) и прямые ссылки из сущностей на файл (*_media_file_id).
-- object_key — ключ/путь в хранилище; доступ через pre-signed URL.
-- Для публичных обложек (topics.cover_media_id) можно подключить CDN.
+## users — пользователи/аккаунты
+- id (bigserial, PK)
+- telegram_id (bigint, unique)
+- full_name (text, not null)
+- email (text)
+- username (text) — Telegram username или иной ник
+- role (varchar(20), not null) — 'student' | 'supervisor' | 'admin'
+- embeddings (text)
+- consent_personal (boolean) — согласие на обработку ПДн
+- consent_private (boolean) — согласие на публикацию в приватных чатах
+- created_at, updated_at (timestamptz, not null, default now())
 
-## Кардинальности (вкратце)
-- users 1↔1 student_profiles / supervisor_profiles (необязательные профили).
-- users 1↔N topics (через author_user_id).
-- topics N↔M users (через topic_candidates).
-- assignments 1↔N completed_assignments (на одного студента — одна запись; составной PK).
-- chat_threads 1↔N chat_messages.
+Индексы: idx_users_role (role)
+
+## student_profiles — профиль студента (1:1 с users)
+- user_id (bigint, PK, FK → users.id, on delete cascade)
+- course (smallint)
+- program (text)
+- faculty (text)
+- education (text)
+- skills (text) — перечень навыков (CSV/JSON)
+- interests (text) — перечень интересов (CSV/JSON)
+- cv (text) — ссылка/описание резюме
+- requirements (text) — пожелания к руководителю/условия
+- assignments (text) — служебное поле под агрегаты/резюме заданий
+- skills_to_learn (text)
+- achievements (text)
+- supervisor_pref (text) — предпочтения по научному руководителю
+- groundwork (text) — имеющийся задел по теме
+- wants_team (boolean)
+- team_role (text)
+- team_needs (text)
+- apply_master (boolean)
+- workplace (text)
+- preferred_team_track (text)
+- dev_track (boolean)
+- science_track (boolean)
+- startup_track (boolean)
+- final_work_pref (text)
+
+## supervisor_profiles — профиль научного руководителя (1:1 с users)
+- user_id (bigint, PK, FK → users.id, on delete cascade)
+- position (text)
+- degree (text)
+- capacity (int) — планируемая загрузка/кол-во студентов
+- requirements (text)
+- interests (text)
+
+## media_files — медиа/файлы
+- id (bigserial, PK)
+- owner_user_id (bigint, FK → users.id, on delete set null)
+- object_key (text, not null) — ключ/путь в хранилище
+- provider (varchar(20), not null) — 's3' | 'tg' | 'local'
+- mime_type (text, not null)
+- size_bytes (bigint)
+- width (int), height (int), duration_seconds (double precision)
+- created_at (timestamptz, not null, default now())
+
+Индексы: idx_media_owner (owner_user_id), idx_media_object_key (object_key)
+
+## topics — темы/направления
+- id (bigserial, PK)
+- author_user_id (bigint, not null, FK → users.id, on delete cascade)
+- title (text, not null)
+- description (text)
+- expected_outcomes (text)
+- required_skills (text)
+- seeking_role (varchar(20), not null) — 'student' | 'supervisor' (кого ищем под тему)
+- embeddings (text)
+- cover_media_id (bigint, FK → media_files.id, on delete set null)
+- is_active (boolean, not null, default true)
+- created_at, updated_at (timestamptz, not null, default now())
+
+Индексы: idx_topics_author, idx_topics_seeking_role, idx_topics_active
+
+## topic_candidates — кандидатуры под темы
+- topic_id (bigint, FK → topics.id, on delete cascade)
+- user_id (bigint, FK → users.id, on delete cascade)
+- score (double precision)
+- is_primary (boolean, default false)
+- approved (boolean, default false)
+- rank (smallint)
+- created_at (timestamptz, not null, default now())
+
+PK: (topic_id, user_id)
+Индексы: idx_tc_user (user_id), idx_tc_topic_score (topic_id, score desc)
+
+## assignments — задания/активности
+- id (bigserial, PK)
+- author_user_id (bigint, not null, FK → users.id, on delete cascade)
+- topic_id (bigint, FK → topics.id, on delete set null)
+- title (text, not null)
+- description (text)
+- due_at (timestamptz)
+- max_score (double precision)
+- is_optional (boolean, default false)
+- attempts_limit (int)
+- correct_answer (text)
+- check_type (varchar(20), not null) — 'compiler' | 'equals' | 'llm' | 'manual'
+- media_file_id (bigint, FK → media_files.id, on delete set null)
+- created_at, updated_at (timestamptz, not null, default now())
+
+Индексы: idx_assign_author, idx_assign_topic
+
+## completed_assignments — выполненные задания
+- assignment_id (bigint, FK → assignments.id, on delete cascade)
+- student_user_id (bigint, FK → users.id, on delete cascade)
+- solution_text (text)
+- solution_media_file_id (bigint, FK → media_files.id, on delete set null)
+- score (double precision)
+- feedback (text)
+- submitted_at (timestamptz)
+- graded_at (timestamptz)
+- grader_user_id (bigint, FK → users.id, on delete set null)
+- created_at (timestamptz, not null, default now())
+
+PK: (assignment_id, student_user_id)
+Индексы: idx_completed_by_student (student_user_id)
+
+## chat_threads — чаты (диалоги)
+- id (bigserial, PK)
+- user_a_id (bigint, not null, FK → users.id, on delete cascade)
+- user_b_id (bigint, not null, FK → users.id, on delete cascade)
+- topic_id (bigint, FK → topics.id, on delete set null)
+- created_at (timestamptz, not null, default now())
+- closed_at (timestamptz)
+
+Индексы: idx_threads_user_a, idx_threads_user_b, idx_threads_topic
+
+## chat_messages — сообщения
+- id (bigserial, PK)
+- thread_id (bigint, not null, FK → chat_threads.id, on delete cascade)
+- sender_user_id (bigint, not null, FK → users.id, on delete cascade)
+- message_text (text)
+- media_file_id (bigint, FK → media_files.id, on delete set null)
+- created_at (timestamptz, not null, default now())
+
+Индексы: idx_msgs_thread, idx_msgs_sender
+
+---
+
+Примечания
+- База — PostgreSQL 16+. Схема разворачивается автоматически из `01_schema.sql`, смонтированного в `/docker-entrypoint-initdb.d/` сервисом `postgres` в `docker-compose.yml`.
+- Поля со списками (skills/interests/…): хранятся как текст (CSV/JSON) для простоты, при необходимости можно заменить на jsonb.
+- `seeking_role` в `topics` определяет, кого ищем под тему: студента или научного руководителя. Это влияет на логику подбора в приложении.
