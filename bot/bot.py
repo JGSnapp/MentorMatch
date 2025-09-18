@@ -1,5 +1,6 @@
 ﻿import os
 import logging
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 import aiohttp
@@ -142,28 +143,42 @@ class MentorMatchBot:
         return await self.cmd_start(update, context)
 
     def _load_admins(self) -> None:
-        try:
-            p = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates', 'admins.txt')
-            if not os.path.exists(p):
-                return
-            with open(p, 'r', encoding='utf-8') as f:
-                for line in f:
-                    s = line.strip()
-                    if not s or s.startswith('#'):
-                        continue
-                    if s.isdigit():
-                        try:
-                            self.admin_ids.add(int(s))
-                        except Exception:
-                            pass
-                        continue
-                    if s.startswith('@'):
-                        s = s[1:]
-                    if s.lower().startswith('https://t.me/'):
-                        s = s.split('/')[-1]
-                    self.admin_usernames.add(s.lower())
-        except Exception as e:
-            logger.warning('Failed to load admins.txt: %s', e)
+        base_dir = Path(__file__).resolve().parent
+        candidates = [
+            base_dir / 'admins.txt',
+            base_dir / 'templates' / 'admins.txt',
+            base_dir.parent / 'admins.txt',
+            base_dir.parent / 'templates' / 'admins.txt',
+            Path('/templates/admins.txt'),
+        ]
+        loaded = False
+        for path in candidates:
+            try:
+                if not path.exists():
+                    continue
+                with path.open('r', encoding='utf-8') as f:
+                    for line in f:
+                        s = line.strip()
+                        if not s or s.startswith('#'):
+                            continue
+                        if s.isdigit():
+                            try:
+                                self.admin_ids.add(int(s))
+                            except Exception:
+                                pass
+                            continue
+                        if s.startswith('@'):
+                            s = s[1:]
+                        if s.lower().startswith('https://t.me/'):
+                            s = s.split('/')[-1]
+                        if s:
+                            self.admin_usernames.add(s.lower())
+                loaded = True
+                break
+            except Exception as e:
+                logger.warning('Failed to load admins.txt from %s: %s', path, e)
+        if not loaded:
+            logger.info('admins.txt not found; бот запущен без админских аккаунтов')
 
     def _is_admin(self, update: Update) -> bool:
         u = update.effective_user
@@ -805,6 +820,12 @@ class MentorMatchBot:
     # Back
     async def cb_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()
+        if self._is_admin(update):
+            await self.cmd_start(update, context)
+            return
+        if context.user_data.get('role'):
+            await self._show_role_menu(update, context)
+            return
         await self.cmd_start(update, context)
 
     # Global error handler (чтобы не сыпались stacktrace в логи без обработки)

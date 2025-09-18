@@ -1307,7 +1307,7 @@ def api_user_candidates(user_id: int, limit: int = Query(5, ge=1, le=50)):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT role FROM users WHERE id=%s", (user_id,))
         row = cur.fetchone()
-        role = (row[0] if row else None)
+        role = (row.get('role') if row else None)
         if role == 'student':
             cur.execute(
                 '''
