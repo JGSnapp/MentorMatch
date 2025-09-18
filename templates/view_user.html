@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang='ru'>
+<head>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1' />
+  <title>Профиль пользователя</title>
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin: 20px; line-height: 1.4; }
+    .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 900px; }
+    .row { display:flex; gap: 20px; }
+    .col { flex: 1; }
+    h2 { margin-top: 0; }
+    dt { font-weight: 600; }
+    dd { margin: 0 0 8px 0; }
+    .muted { color:#64748b; }
+    .actions { margin: 12px 0; }
+    button, a.btn { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; text-decoration:none; }
+    a.btn.secondary { background: #334155; }
+  </style>
+</head>
+<body>
+  <h2>Профиль пользователя #{{ user.id }}</h2>
+  <div class='actions'>
+    <a class='btn' href='/edit-user/{{ user.id }}'>Изменить параметры</a>
+    <a class='btn secondary' href='/?kind={{ 'supervisors' if user.role=='supervisor' else 'students' }}'>Назад к списку</a>
+    {% if user.role=='student' %}
+      <form method='post' action='/do-match-student' style='display:inline; margin-left:8px;'>
+        <input type='hidden' name='student_user_id' value='{{ user.id }}' />
+        <button type='submit'>Подобрать темы</button>
+      </form>
+    {% elif user.role=='supervisor' %}
+      <form method='post' action='/do-match-supervisor' style='display:inline; margin-left:8px;'>
+        <input type='hidden' name='supervisor_user_id' value='{{ user.id }}' />
+        <button type='submit'>Подобрать темы</button>
+      </form>
+    {% endif %}
+  </div>
+  <div class='card'>
+    <div class='row'>
+      <div class='col'>
+        <h3>Основное</h3>
+        <dl>
+          <dt>ФИО</dt><dd>{{ user.full_name }}</dd>
+          <dt>Email</dt><dd>{{ user.email or '-' }}</dd>
+          <dt>Username (tg)</dt>
+          <dd>
+            {% if user.username %}
+              {% set u = user.username %}
+              {% if 't.me' in u %}
+                <a href="{{ u }}" target="_blank">{{ u }}</a>
+              {% else %}
+                {% set uname = u.lstrip('@') %}
+                <a href="https://t.me/{{ uname }}" target="_blank">@{{ uname }}</a>
+              {% endif %}
+            {% else %}-{% endif %}
+          </dd>
+          <dt>Роль</dt><dd>{{ user.role }}</dd>
+          <dt>Создан</dt><dd>{{ user.created_at }}</dd>
+        </dl>
+      </div>
+      <div class='col'>
+        {% if student %}
+          <h3>Профиль студента</h3>
+          <dl>
+            <dt>Направление</dt><dd>{{ student.program or '-' }}</dd>
+            <dt>Навыки</dt><dd>{{ student.skills or '-' }}</dd>
+            <dt>Интересы</dt><dd>{{ student.interests or '-' }}</dd>
+            <dt>CV</dt>
+            <dd>
+              {% if student.cv %}
+                {% if student.cv.startswith('/media/') %}
+                  <a href="{{ student.cv }}" target="_blank">Скачать CV</a>
+                {% else %}
+                  <a href="{{ student.cv }}" target="_blank">{{ student.cv }}</a>
+                {% endif %}
+              {% else %}-{% endif %}
+            </dd>
+            <dt>Треки</dt><dd>dev: {{ student.dev_track }}, science: {{ student.science_track }}, startup: {{ student.startup_track }}</dd>
+          </dl>
+        {% elif supervisor %}
+          <h3>Профиль руководителя</h3>
+          <dl>
+            <dt>Должность</dt><dd>{{ supervisor.position or '-' }}</dd>
+            <dt>Степень</dt><dd>{{ supervisor.degree or '-' }}</dd>
+            <dt>Лимит</dt><dd>{{ supervisor.capacity or '-' }}</dd>
+            <dt>Интересы</dt><dd>{{ supervisor.interests or '-' }}</dd>
+            <dt>Требования</dt><dd>{{ supervisor.requirements or '-' }}</dd>
+          </dl>
+        {% else %}
+          <p class='muted'>Профиль отсутствует.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</body>
+</html>

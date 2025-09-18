@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang='ru'>
+<head>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1' />
+  <title>Изменить тему</title>
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin: 20px; line-height: 1.4; }
+    .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 820px; }
+    label { display:block; font-size:0.9rem; margin-bottom:8px; }
+    input[type='text'], input[type='number'], textarea, select { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; }
+    textarea { min-height: 100px; }
+    button { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #1e40af; }
+    .row { display:flex; gap: 12px; align-items:center; }
+    .muted { color: #64748b; font-size: 0.9rem; }
+    a { color:#2563eb; }
+  </style>
+</head>
+<body>
+  <h2>Изменить тему #{{ topic.id }}</h2>
+  <p class='muted'>Автор: {{ topic.author }}</p>
+  <div class='card'>
+    <form method='post' action='/update-topic'>
+      <input type='hidden' name='topic_id' value='{{ topic.id }}'>
+      <label>Заголовок <input type='text' name='title' value='{{ topic.title }}' required></label>
+      <label>Кого ищем
+        <select name='seeking_role'>
+          <option value='student' {{ 'selected' if topic.seeking_role=='student' else '' }}>student</option>
+          <option value='supervisor' {{ 'selected' if topic.seeking_role=='supervisor' else '' }}>supervisor</option>
+        </select>
+      </label>
+      <label>Направление (9 / 11 / 45)
+        <input type='number' name='direction' min='0' max='99' value='{{ topic.direction or "" }}' placeholder='опционально'>
+      </label>
+      <label><input type='checkbox' name='is_active' {{ 'checked' if topic.is_active else '' }}> Активна</label>
+      <label>Описание <textarea name='description'>{{ topic.description or '' }}</textarea></label>
+      <label>Ожидаемые результаты <textarea name='expected_outcomes'>{{ topic.expected_outcomes or '' }}</textarea></label>
+      <label>Требуемые навыки <input type='text' name='required_skills' value='{{ topic.required_skills or "" }}'></label>
+      <div class='row'>
+        <button type='submit'>Сохранить</button>
+        <a href='/?kind=topics' class='muted'>Отмена</a>
+      </div>
+    </form>
+  </div>
+</body>
+</html>

@@ -37,6 +37,7 @@ services:
         - SERVER_URL=http://server:8000
       volumes:
         - ./bot:/app
+        - ./templates:/app/templates:ro
       depends_on:
         - server
       restart: unless-stopped 

@@ -8,4 +8,6 @@ Jinja2
 openai
 python-telegram-bot==20.7
 python-multipart>=0.0.9
+pypdf>=4.2.0
+python-docx>=0.8.11
 

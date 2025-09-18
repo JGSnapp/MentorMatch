@@ -1,17 +1,22 @@
-import os
+﻿import os
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Form, Query, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
+from media_store import persist_media_from_url, MEDIA_ROOT
 
-from parse_gform import fetch_normalized_rows
-from matching import handle_match, handle_match_student
+from parse_gform import fetch_normalized_rows, fetch_supervisor_rows
+from matching import handle_match, handle_match_student, handle_match_supervisor_user
+from matching import handle_match_role
+from matching import client as LLM_CLIENT  # reuse configured OpenAI client
+from matching import PROXY_MODEL
 from admin import create_admin_router
+from sheet_pairs import export_pairs_from_db
 
 
 load_dotenv()
@@ -42,6 +47,56 @@ def _truthy(val: Optional[str]) -> bool:
     return str(val or '').strip().lower() in ('1', 'true', 'yes', 'y', 'on')
 
 
+def _normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    s = (raw or '').strip()
+    if s.startswith('@'):
+        s = s[1:]
+    if s.lower().startswith(('http://t.me/', 'https://t.me/', 'http://telegram.me/', 'https://telegram.me/')):
+        return s
+    import re
+    m = re.search(r"(?:https?://)?t(?:elegram)?\.me/([A-Za-z0-9_]+)", s)
+    if m:
+        return f"https://t.me/{m.group(1)}"
+    s = re.sub(r"[^A-Za-z0-9_]", "", s)
+    return f"https://t.me/{s}" if s else None
+
+
+def _extract_tg_username(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.startswith('@'):
+        s = s[1:]
+    import re
+    m = re.search(r"(?:https?://)?t(?:elegram)?\.me/([A-Za-z0-9_]+)", s)
+    if m:
+        return m.group(1)
+    s = re.sub(r"[^A-Za-z0-9_]", "", s)
+    return s or None
+
+
+def _resolve_service_account_path(p: Optional[str]) -> Optional[str]:
+    if not p:
+        return None
+    try:
+        path = Path(p)
+        if path.is_absolute() and path.exists():
+            return str(path)
+        candidates = [
+            Path(p),
+            Path(__file__).parent / p,              # /app/<p>
+            Path(__file__).parent.parent / p,       # repo root candidate
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+    except Exception:
+        pass
+    return p
+
+
 def _read_csv_rows(p: Path) -> List[Dict[str, str]]:
     import csv
     if not p.exists():
@@ -51,6 +106,28 @@ def _read_csv_rows(p: Path) -> List[Dict[str, str]]:
         return [ {k: (v or '').strip() for k,v in row.items()} for row in reader ]
 
 
+
+
+def _is_http_url(s: Optional[str]) -> bool:
+    return bool(s) and str(s).strip().lower().startswith(('http://', 'https://'))
+
+
+def _process_cv(conn, user_id: int, cv_val: Optional[str]) -> Optional[str]:
+    val = (cv_val or '').strip()
+    if not val:
+        return None
+    # Already our media link
+    if val.startswith('/media/'):
+        return val
+    # External link -> download and persist
+    if _is_http_url(val):
+        try:
+            _mid, public = persist_media_from_url(conn, user_id, val, category='cv')
+            return public
+        except Exception as e:
+            print(f'CV download failed for user {user_id}: {e}')
+            return cv_val
+    return cv_val
 def _maybe_test_import():
     if not _truthy(os.getenv('TEST_IMPORT')):
         return
@@ -161,6 +238,129 @@ def _maybe_test_import():
 
 @app.on_event('startup')
 async def _startup_event():
+    # Ensure new tables (lightweight migration for environments with existing DB)
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS user_candidates (
+                  user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  topic_id     BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                  score        DOUBLE PRECISION,
+                  is_primary   BOOLEAN NOT NULL DEFAULT FALSE,
+                  approved     BOOLEAN NOT NULL DEFAULT FALSE,
+                  rank         SMALLINT,
+                  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  PRIMARY KEY (user_id, topic_id)
+                )
+                '''
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_uc_topic ON user_candidates(topic_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_uc_user_score ON user_candidates(user_id, score DESC)")
+            # Roles tables
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS roles (
+                  id BIGSERIAL PRIMARY KEY,
+                  topic_id BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                  name TEXT NOT NULL,
+                  description TEXT,
+                  required_skills TEXT,
+                  capacity INTEGER,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                '''
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_roles_topic ON roles(topic_id)")
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS role_candidates (
+                  role_id BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  score DOUBLE PRECISION,
+                  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+                  approved BOOLEAN NOT NULL DEFAULT FALSE,
+                  rank SMALLINT,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  PRIMARY KEY (role_id, user_id)
+                )
+                '''
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_rc_role_score ON role_candidates(role_id, score DESC)")
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS student_candidates (
+                  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  role_id BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                  score DOUBLE PRECISION,
+                  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+                  approved BOOLEAN NOT NULL DEFAULT FALSE,
+                  rank SMALLINT,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  PRIMARY KEY (user_id, role_id)
+                )
+                '''
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sc_user_score ON student_candidates(user_id, score DESC)")
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS supervisor_candidates (
+                  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  topic_id BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                  score DOUBLE PRECISION,
+                  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+                  approved BOOLEAN NOT NULL DEFAULT FALSE,
+                  rank SMALLINT,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  PRIMARY KEY (user_id, topic_id)
+                )
+                '''
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sc_topic ON supervisor_candidates(topic_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sc_user_score2 ON supervisor_candidates(user_id, score DESC)")
+            # Add topics.direction if missing
+            try:
+                cur.execute("ALTER TABLE topics ADD COLUMN IF NOT EXISTS direction SMALLINT")
+            except Exception as _e:
+                pass
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_direction ON topics(direction)")
+            except Exception:
+                pass
+            # student_profiles schema is defined in 01_schema.sql; no runtime migration for team_role
+            # Approved links
+            try:
+                cur.execute("ALTER TABLE topics ADD COLUMN IF NOT EXISTS approved_supervisor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE roles ADD COLUMN IF NOT EXISTS approved_student_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL")
+            except Exception:
+                pass
+            # Messages table
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS messages (
+                  id BIGSERIAL PRIMARY KEY,
+                  sender_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  receiver_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  topic_id BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                  role_id BIGINT REFERENCES roles(id) ON DELETE SET NULL,
+                  body TEXT NOT NULL,
+                  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                  answer TEXT,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  responded_at TIMESTAMPTZ
+                )
+                '''
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_receiver ON messages(receiver_user_id, status)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_user_id, status)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic_id)")
+            conn.commit()
+    except Exception as e:
+        print(f"Startup migration warning (user_candidates): {e}")
     _maybe_test_import()
 
 
@@ -170,7 +370,7 @@ def api_get_topics(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, 
         cur.execute(
             '''
             SELECT t.id, t.title, t.description, t.seeking_role, t.created_at,
-                   u.full_name AS author, t.expected_outcomes, t.required_skills
+                   u.full_name AS author, t.expected_outcomes, t.required_skills, t.direction
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
             WHERE t.is_active = TRUE
@@ -188,7 +388,7 @@ def api_get_topic(topic_id: int):
         cur.execute(
             '''
             SELECT t.id, t.title, t.description, t.seeking_role, t.created_at,
-                   u.full_name AS author, t.expected_outcomes, t.required_skills
+                   u.full_name AS author, t.expected_outcomes, t.required_skills, t.direction
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
             WHERE t.id = %s AND t.is_active = TRUE
@@ -272,6 +472,23 @@ def api_get_student(student_id: int):
         return dict(row)
 
 
+@app.get('/api/user-topics/{user_id}', response_class=JSONResponse)
+def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT t.id, t.title, t.description, t.expected_outcomes, t.required_skills,
+                   t.seeking_role, t.direction, t.is_active, t.created_at
+            FROM topics t
+            WHERE t.author_user_id = %s
+            ORDER BY t.created_at DESC
+            OFFSET %s LIMIT %s
+            ''', (user_id, offset, limit),
+        )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
 @app.get('/api/sheets-status', response_class=JSONResponse)
 def api_get_sheets_status():
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
@@ -293,28 +510,250 @@ def api_get_sheets_status():
 @app.get('/api/sheets-config', response_class=JSONResponse)
 def api_get_sheets_config():
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
-    service_account_file = os.getenv('SERVICE_ACCOUNT_FILE')
+    service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE'))
     if spreadsheet_id and service_account_file:
+        # Validate that the service account file actually exists in the container
+        try:
+            import os as _os
+            if not _os.path.exists(service_account_file):
+                return {
+                    'status': 'not_configured',
+                    'error': 'SERVICE_ACCOUNT_FILE not found',
+                    'service_account_file': service_account_file,
+                    'spreadsheet_id': spreadsheet_id,
+                }
+        except Exception:
+            # If validation fails for any reason, fall back to best effort
+            pass
         return {'status': 'configured', 'spreadsheet_id': spreadsheet_id, 'service_account_file': service_account_file}
     return {'status': 'not_configured', 'error': 'Missing env vars'}
+
+
+# =============================
+# Identity & self service
+# =============================
+
+
+@app.get('/api/whoami', response_class=JSONResponse)
+def api_whoami(tg_id: Optional[int] = Query(None), username: Optional[str] = Query(None)):
+    uname = _extract_tg_username(username)
+    link = _normalize_telegram_link(username) if username else None
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        if tg_id:
+            cur.execute("SELECT id, full_name, role, email, username FROM users WHERE telegram_id=%s", (int(tg_id),))
+            rows = [dict(r) for r in cur.fetchall()]
+            if rows:
+                return {'status': 'ok', 'matches': rows}
+        params = []
+        clauses = []
+        if link:
+            clauses.append("LOWER(username)=LOWER(%s)")
+            params.append(link)
+        if uname:
+            clauses.append("LOWER(username)=LOWER(%s)")
+            params.append(f"https://t.me/{uname}")
+        if not clauses:
+            return {'status': 'ok', 'matches': []}
+        sql = f"SELECT id, full_name, role, email, username FROM users WHERE (" + " OR ".join(clauses) + ") LIMIT 5"
+        cur.execute(sql, params)
+        rows = [dict(r) for r in cur.fetchall()]
+        return {'status': 'ok', 'matches': rows}
+
+
+@app.post('/api/bind-telegram', response_class=JSONResponse)
+def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[int] = Form(None), username: Optional[str] = Form(None)):
+    link = _normalize_telegram_link(username) if username else None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET telegram_id=COALESCE(%s, telegram_id), username=COALESCE(%s, username), updated_at=now() WHERE id=%s",
+            ((int(tg_id) if tg_id else None), link, user_id),
+        )
+        conn.commit()
+    # Best-effort export after status change (especially on accept)
+    try:
+        if act == 'accept':
+            pairs_sheet = os.getenv('PAIRS_SPREADSHEET_ID')
+            service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
+            if pairs_sheet:
+                with get_conn() as conn2:
+                    export_pairs_from_db(conn2, pairs_sheet, service_account_file)
+    except Exception:
+        pass
+    return {'status': 'ok'}
+
+
+@app.post('/api/self-register', response_class=JSONResponse)
+def api_self_register(role: str = Form(...), full_name: Optional[str] = Form(None), username: Optional[str] = Form(None), tg_id: Optional[int] = Form(None), email: Optional[str] = Form(None)):
+    r = (role or '').strip().lower()
+    if r not in ('student', 'supervisor'):
+        return {'status': 'error', 'message': 'role must be student or supervisor'}
+    link = _normalize_telegram_link(username) if username else None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''
+            INSERT INTO users(full_name, email, username, telegram_id, role, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, now(), now())
+            RETURNING id
+            ''', (
+                (full_name or f'Telegram user {(_extract_tg_username(username) or tg_id or "")}').strip(),
+                (email or None),
+                link,
+                (int(tg_id) if tg_id else None),
+                r,
+            ),
+        )
+        uid = cur.fetchone()[0]
+        if r == 'student':
+            cur.execute("INSERT INTO student_profiles(user_id) VALUES (%s)", (uid,))
+        else:
+            cur.execute("INSERT INTO supervisor_profiles(user_id) VALUES (%s)", (uid,))
+        conn.commit()
+    return {'status': 'ok', 'user_id': uid, 'role': r}
+
+
+@app.post('/api/update-student-profile', response_class=JSONResponse)
+def api_update_student_profile(
+    user_id: int = Form(...),
+    program: Optional[str] = Form(None),
+    skills: Optional[str] = Form(None),
+    interests: Optional[str] = Form(None),
+    cv: Optional[str] = Form(None),
+    skills_to_learn: Optional[str] = Form(None),
+    achievements: Optional[str] = Form(None),
+    workplace: Optional[str] = Form(None),
+):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
+        exists = cur.fetchone() is not None
+        if exists:
+            cur.execute(
+                '''
+                UPDATE student_profiles
+                SET program=%s, skills=%s, interests=%s, cv=%s, skills_to_learn=%s, achievements=%s, workplace=%s
+                WHERE user_id=%s
+                ''', (program, skills, interests, cv, skills_to_learn, achievements, workplace, user_id),
+            )
+        else:
+            cur.execute(
+                '''
+                INSERT INTO student_profiles(user_id, program, skills, interests, cv, skills_to_learn, achievements, workplace)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (user_id, program, skills, interests, cv, skills_to_learn, achievements, workplace),
+            )
+        conn.commit()
+    return {'status': 'ok'}
+
+
+@app.post('/api/update-supervisor-profile', response_class=JSONResponse)
+def api_update_supervisor_profile(
+    user_id: int = Form(...),
+    position: Optional[str] = Form(None),
+    degree: Optional[str] = Form(None),
+    capacity: Optional[int] = Form(None),
+    interests: Optional[str] = Form(None),
+    requirements: Optional[str] = Form(None),
+):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT 1 FROM supervisor_profiles WHERE user_id=%s', (user_id,))
+        exists = cur.fetchone() is not None
+        if exists:
+            cur.execute(
+                '''
+                UPDATE supervisor_profiles
+                SET position=%s, degree=%s, capacity=%s, interests=%s, requirements=%s
+                WHERE user_id=%s
+                ''', (position, degree, (capacity if capacity is not None else None), interests, requirements, user_id),
+            )
+        else:
+            cur.execute(
+                '''
+                INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (user_id, position, degree, (capacity if capacity is not None else None), interests, requirements),
+            )
+        conn.commit()
+    return {'status': 'ok'}
+
+
+@app.post('/api/add-topic', response_class=JSONResponse)
+def api_add_topic(author_user_id: int = Form(...), title: str = Form(...), description: Optional[str] = Form(None), expected_outcomes: Optional[str] = Form(None), required_skills: Optional[str] = Form(None), seeking_role: str = Form('student'), direction: Optional[int] = Form(None)):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)', (author_user_id, title.strip(), (direction if direction is not None else None)))
+        if cur.fetchone():
+            return {'status': 'ok', 'message': 'duplicate'}
+        cur.execute(
+            '''
+            INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills, direction, seeking_role, is_active, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, now(), now())
+            RETURNING id
+            ''', (author_user_id, title.strip(), (description or None), (expected_outcomes or None), (required_skills or None), (direction if direction is not None else None), seeking_role),
+        )
+        tid = cur.fetchone()[0]
+        conn.commit()
+    return {'status': 'ok', 'topic_id': tid}
+
+
+@app.post('/api/add-role', response_class=JSONResponse)
+def api_add_role(topic_id: int = Form(...), name: str = Form(...), description: Optional[str] = Form(None), required_skills: Optional[str] = Form(None), capacity: Optional[int] = Form(None)):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''
+            INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, now(), now())
+            RETURNING id
+            ''', (topic_id, name.strip(), (description or None), (required_skills or None), (capacity if capacity is not None else None)),
+        )
+        rid = cur.fetchone()[0]
+        conn.commit()
+    # Best-effort export
+    try:
+        pairs_sheet = os.getenv('PAIRS_SPREADSHEET_ID')
+        service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
+        if pairs_sheet:
+            with get_conn() as conn2:
+                export_pairs_from_db(conn2, pairs_sheet, service_account_file)
+    except Exception as _e:
+        pass
+    return {'status': 'ok', 'role_id': rid}
 
 
 @app.post('/api/import-sheet', response_class=JSONResponse)
 def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
     try:
-        service_account_file = os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json')
+        service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
+        # Fast TLS reachability check for clearer SSL errors
+        try:
+            import requests as _requests
+            _requests.get('https://www.googleapis.com/generate_204', timeout=5)
+        except Exception as _tls_e:
+            # Continue, but log for diagnostics
+            try:
+                print(f"/api/import-sheet TLS preflight warning: {type(_tls_e).__name__}: {_tls_e}")
+            except Exception:
+                pass
+        try:
+            import os as _os
+            if not _os.path.exists(service_account_file):
+                return {'status': 'error', 'message': f'SERVICE_ACCOUNT_FILE not found: {service_account_file}'}
+        except Exception:
+            pass
         rows = fetch_normalized_rows(
             spreadsheet_id=spreadsheet_id,
             sheet_name=sheet_name,
             service_account_file=service_account_file,
         )
+        if (os.getenv('LOG_LEVEL') or '').upper() == 'DEBUG':
+            try:
+                print(f"/api/import-sheet: rows={len(rows)} sheet_id={spreadsheet_id} sheet_name={sheet_name}")
+            except Exception:
+                pass
 
         inserted_users = 0
         inserted_profiles = 0
         inserted_topics = 0
 
         with get_conn() as conn, conn.cursor() as cur:
-            for r in rows:
+            for idx, r in enumerate(rows):
                 full_name = (r.get('full_name') or '').strip()
                 email = (r.get('email') or '').strip()
                 if not (full_name or email):
@@ -343,8 +782,10 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                 updates = []
                 params: List[Any] = []
                 if r.get('telegram'):
-                    updates.append('username=%s')
-                    params.append(r['telegram'])
+                    tg = _normalize_telegram_link(r.get('telegram'))
+                    if tg:
+                        updates.append('username=%s')
+                        params.append(tg)
                 if r.get('consent_personal') is not None:
                     updates.append('consent_personal=%s')
                     params.append(r['consent_personal'])
@@ -353,7 +794,17 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                     params.append(r['consent_private'])
                 if updates:
                     params.append(user_id)
-                    cur.execute(f"UPDATE users SET {', '.join(updates)}, updated_at=now() WHERE id=%s", params)
+                    try:
+                        cur.execute(
+                            f"UPDATE users SET {', '.join(updates)}, updated_at=now() WHERE id=%s",
+                            tuple(params),
+                        )
+                    except TypeError as te:
+                        try:
+                            print(f"/api/import-sheet TypeError at row {idx} during users UPDATE: {te}. updates={updates} params={params}")
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"row {idx}: {type(te).__name__}: {te}")
 
                 # Upsert student profile
                 cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
@@ -364,21 +815,21 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                 requirements = r.get('supervisor_preference')
 
                 if exists:
-                    cur.execute(
-                        '''
-                        UPDATE student_profiles
-                        SET program=%s, skills=%s, interests=%s, cv=%s, requirements=%s,
-                            skills_to_learn=%s, achievements=%s, supervisor_pref=%s, groundwork=%s,
-                            wants_team=%s, team_role=%s, team_needs=%s,
-                            apply_master=%s, workplace=%s,
-                            preferred_team_track=%s, dev_track=%s, science_track=%s, startup_track=%s,
-                            final_work_pref=%s
-                        WHERE user_id=%s
+                    try:
+                        cur.execute(
+                            '''
+                            UPDATE student_profiles
+                            SET program=%s, skills=%s, interests=%s, cv=%s, requirements=%s,
+                                skills_to_learn=%s, achievements=%s, supervisor_pref=%s, groundwork=%s,
+                                wants_team=%s, team_role=%s, team_has=%s, team_needs=%s,
+                                apply_master=%s, workplace=%s,
+                                preferred_team_track=%s, dev_track=%s, science_track=%s, startup_track=%s,
+                                final_work_pref=%s
+                            WHERE user_id=%s
                         ''', (
                             r.get('program'),
                             skills_have,
-                            interests,
-                            r.get('cv'),
+                            interests, _process_cv(conn, user_id, r.get('cv')),
                             requirements,
                             skills_want,
                             r.get('achievements'),
@@ -386,6 +837,7 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                             r.get('groundwork'),
                             r.get('wants_team'),
                             r.get('team_role'),
+                            r.get('team_has'),
                             r.get('team_needs'),
                             r.get('apply_master'),
                             r.get('workplace'),
@@ -396,26 +848,32 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                             r.get('final_work_preference'),
                             user_id,
                         ),
-                    )
-                else:
-                    cur.execute(
-                        '''
-                        INSERT INTO student_profiles(
-                            user_id, program, skills, interests, cv, requirements,
-                            skills_to_learn, achievements, supervisor_pref, groundwork,
-                            wants_team, team_role, team_needs, apply_master, workplace,
-                            preferred_team_track, dev_track, science_track, startup_track, final_work_pref
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s,
-                                %s, %s, %s, %s,
-                                %s, %s, %s, %s, %s,
-                                %s, %s, %s, %s, %s)
+                    except TypeError as te:
+                        try:
+                            print(f"/api/import-sheet TypeError at row {idx} during student_profiles UPDATE: {te}. row={r}")
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"row {idx}: {type(te).__name__}: {te}")
+                else:
+                    try:
+                        cur.execute(
+                            '''
+                            INSERT INTO student_profiles(
+                                user_id, program, skills, interests, cv, requirements,
+                                skills_to_learn, achievements, supervisor_pref, groundwork,
+                                wants_team, team_role, team_has, team_needs, apply_master, workplace,
+                                preferred_team_track, dev_track, science_track, startup_track, final_work_pref
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s,
+                                    %s, %s, %s, %s,
+                                    %s, %s, %s, %s, %s,
+                                    %s, %s, %s, %s, %s, %s)
                         ''', (
                             user_id,
                             r.get('program'),
                             skills_have,
-                            interests,
-                            r.get('cv'),
+                            interests, _process_cv(conn, user_id, r.get('cv')),
                             requirements,
                             skills_want,
                             r.get('achievements'),
@@ -423,6 +881,7 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                             r.get('groundwork'),
                             r.get('wants_team'),
                             r.get('team_role'),
+                            r.get('team_has'),
                             r.get('team_needs'),
                             r.get('apply_master'),
                             r.get('workplace'),
@@ -432,7 +891,13 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                             r.get('startup_track'),
                             r.get('final_work_preference'),
                         ),
-                    )
+                        )
+                    except TypeError as te:
+                        try:
+                            print(f"/api/import-sheet TypeError at row {idx} during student_profiles INSERT: {te}. row={r}")
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"row {idx}: {type(te).__name__}: {te}")
                 inserted_profiles += 1
 
                 # Create student's own topic if provided
@@ -445,8 +910,13 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                         groundwork = r.get('groundwork')
                         if groundwork:
                             desc = (desc or '').strip()
-                            tail = f"\n\nИмеющийся задел: {groundwork}".strip()
+                            tail = f"\n\n????????? ?????: {groundwork}".strip()
                             desc = f"{desc}\n{tail}" if desc else tail
+                        practical = (topic.get('practical_importance') or None)
+                        if practical:
+                            desc = (desc or '').strip()
+                            tail2 = f"\n\n???????????? ??????????: {practical}".strip()
+                            desc = f"{desc}\n{tail2}" if desc else tail2
                         cur.execute(
                             '''
                             INSERT INTO topics(author_user_id, title, description, expected_outcomes,
@@ -464,10 +934,252 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
 
         return {
             'status': 'success',
-            'message': f'Импорт: users+{inserted_users}, profiles~{inserted_profiles}, topics+{inserted_topics}',
+            'message': f'Ð¿â‰¤Ð¿â•ªÐ¿Â©Ð¿â•¬Ñâ”€Ñâ”Œ: users+{inserted_users}, profiles~{inserted_profiles}, topics+{inserted_topics}',
             'stats': {
                 'inserted_users': inserted_users,
                 'inserted_profiles': inserted_profiles,
+                'inserted_topics': inserted_topics,
+                'total_rows_in_sheet': len(rows) if rows else 0,
+            }
+        }
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        return {'status': 'error', 'message': err}
+
+
+# =============================
+# Import Supervisors (2nd sheet)
+# =============================
+
+def _llm_extract_topics(text: str) -> Optional[List[Dict[str, Any]]]:
+    if not text or not text.strip():
+        return None
+    if LLM_CLIENT is None:
+        return None
+
+    functions = [
+        {
+            'name': 'extract_topics',
+            'description': 'Ð¿â‰¤Ð¿â•¥Ð¿â•¡Ð¿â•©Ð¿â•£Ð¿â•¨Ð¿â•¦ Ñâ”‚Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•¬Ð¿â•¨ Ñâ”ŒÐ¿â•£Ð¿â•ª Ð¿â•¦Ð¿â•¥ Ñâ”ŒÐ¿â•£Ð¿â•¨Ñâ”‚Ñâ”ŒÐ¿â•Ÿ Ñâ”‚ Ð¿â•¨Ñâ”€Ð¿â•ŸÑâ”ŒÐ¿â•¨Ð¿â•¦Ð¿â•ªÐ¿â•¦ Ð¿Â©Ð¿â•¬Ð¿â•©Ñâ–Ð¿â•ªÐ¿â•¦.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'topics': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'title': {'type': 'string'},
+                                'description': {'type': 'string'},
+                                'expected_outcomes': {'type': 'string'},
+                                'required_skills': {'type': 'string'}
+                            },
+                            'required': ['title']
+                        },
+                        'minItems': 1
+                    }
+                },
+                'required': ['topics']
+            }
+        }
+    ]
+
+    messages = [
+        {
+            'role': 'system',
+            'content': 'Ð¿â•’Ñâ–€ Ð¿â•ŸÑâ”‚Ñâ”‚Ð¿â•¦Ñâ”‚Ñâ”ŒÐ¿â•£Ð¿â•«Ñâ”Œ, Ð¿â•¨Ð¿â•¬Ñâ”ŒÐ¿â•¬Ñâ”€Ñâ–€Ð¿â•§ Ñâ”‚Ñâ”ŒÑâ”€Ñâ”Ð¿â•¨Ñâ”ŒÑâ”Ñâ”€Ð¿â•¦Ñâ”€Ñâ”Ð¿â•£Ñâ”Œ Ñâ”‚Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•¬Ð¿â•¨ Ñâ”ŒÐ¿â•£Ð¿â•ª Ð¿â–“Ð¿Â Ð¿â•. Ð¿â–“Ñâ”‚Ð¿â•£Ð¿ÐÐ¿â•¢Ð¿â•Ÿ Ð¿â•¬Ñâ”ŒÐ¿â•¡Ð¿â•£Ñâ”¤Ð¿â•ŸÐ¿â•§ Ð¿Â©Ð¿â•¬-Ñâ”€Ñâ”Ñâ”‚Ñâ”‚Ð¿â•¨Ð¿â•¦. Ð¿â–“Ð¿â•£Ñâ”€Ð¿â•«Ð¿â•¦ Ñâ”ŒÐ¿â•¬Ð¿â•©Ñâ–„Ð¿â•¨Ð¿â•¬ Ñâ”‚Ñâ”ŒÑâ”€Ñâ”Ð¿â•¨Ñâ”ŒÑâ”Ñâ”€Ð¿â•¦Ñâ”€Ð¿â•¬Ð¿â•¡Ð¿â•ŸÐ¿â•«Ð¿â•«Ñâ–€Ð¿â•§ Ñâ”€Ð¿â•£Ð¿â•¥Ñâ”Ð¿â•©Ñâ–„Ñâ”ŒÐ¿â•ŸÑâ”Œ Ñâ”¤Ð¿â•£Ñâ”€Ð¿â•£Ð¿â•¥ Ñâ””Ñâ”Ð¿â•«Ð¿â•¨Ñâ”œÐ¿â•¦Ñâ–Œ.'
+        },
+        {
+            'role': 'user',
+            'content': f'Ð¿â•’Ð¿â•£Ð¿â•¨Ñâ”‚Ñâ”Œ, Ñâ”‚Ð¿â•¬Ð¿â•¢Ð¿â•£Ñâ”€Ð¿â•¤Ð¿â•ŸÑâ”´Ð¿â•¦Ð¿â•§ Ñâ”ŒÐ¿â•£Ð¿â•ªÑâ–€ Ð¿â•¦Ð¿â•©Ð¿â•¦ Ñâ”ŒÐ¿â•£Ð¿â•ªÐ¿â•ŸÑâ”ŒÐ¿â•¦Ð¿â•¨Ð¿â•¦ Ð¿â•¢Ð¿â•©Ñâ– Ð¿â–“Ð¿Â Ð¿â• (Ð¿â•ªÐ¿â•¬Ð¿ÐÑâ”Ñâ”Œ Ð¿â• Ñâ–€Ñâ”ŒÑâ–„ Ð¿Â©Ð¿â•£Ñâ”€Ð¿â•£Ñâ”¤Ð¿â•¦Ñâ”‚Ð¿â•©Ð¿â•£Ð¿â•«Ñâ–€ Ñâ”¤Ð¿â•£Ñâ”€Ð¿â•£Ð¿â•¥ Ð¿â•¥Ð¿â•ŸÐ¿Â©Ñâ–Ñâ”ŒÑâ–€Ð¿â•£, Ñâ”ŒÐ¿â•¬Ñâ”¤Ð¿â•¨Ð¿â•¦ Ñâ”‚ Ð¿â•¥Ð¿â•ŸÐ¿Â©Ñâ–Ñâ”ŒÐ¿â•¬Ð¿â•§, Ñâ”‚Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•¨Ð¿â•¬Ð¿â•ª):\n\n{text}\n\nÐ¿â–“Ñâ–€Ð¿â•¢Ð¿â•£Ð¿â•©Ð¿â•¦ Ð¿â•¬Ñâ”ŒÐ¿â•¢Ð¿â•£Ð¿â•©Ñâ–„Ð¿â•«Ñâ–€Ð¿â•£ Ñâ”ŒÐ¿â•£Ð¿â•ªÑâ–€. Ð¿âˆ™Ñâ”‚Ð¿â•©Ð¿â•¦ Ð¿â•¢Ð¿â•£Ñâ”ŒÐ¿â•ŸÐ¿â•©Ð¿â•£Ð¿â•§ Ð¿â•ªÐ¿â•ŸÐ¿â•©Ð¿â•¬ Ð‘â”€â–  Ñâ”‚Ñâ””Ð¿â•¬Ñâ”€Ð¿â•ªÑâ”Ð¿â•©Ð¿â•¦Ñâ”€Ñâ”Ð¿â•§ Ð¿â•¨Ñâ”€Ð¿â•ŸÑâ”ŒÐ¿â•¨Ð¿â•¬Ð¿â•£ Ð¿â•¬Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•ŸÐ¿â•«Ð¿â•¦Ð¿â•£, Ð¿â•¬Ð¿â•¤Ð¿â•¦Ð¿â•¢Ð¿â•ŸÐ¿â•£Ð¿â•ªÑâ–€Ð¿â•£ Ñâ”€Ð¿â•£Ð¿â•¥Ñâ”Ð¿â•©Ñâ–„Ñâ”ŒÐ¿â•ŸÑâ”ŒÑâ–€ Ð¿â•¦ Ñâ”ŒÑâ”€Ð¿â•£Ð¿â• Ñâ”Ð¿â•£Ð¿â•ªÑâ–€Ð¿â•£ Ð¿â•«Ð¿â•ŸÐ¿â•¡Ñâ–€Ð¿â•¨Ð¿â•¦ Ð¿Â©Ð¿â•¬ Ñâ”‚Ð¿â•ªÑâ–€Ñâ”‚Ð¿â•©Ñâ”.'
+        }
+    ]
+
+    try:
+        resp = LLM_CLIENT.chat.completions.create(
+            model=PROXY_MODEL,
+            messages=messages,
+            functions=functions,
+            function_call={'name': 'extract_topics'},
+            temperature=0.2,
+        )
+    except Exception as e:
+        print(f"LLM extract error: {e}")
+        return None
+
+    if not resp.choices or not resp.choices[0].message:
+        return None
+    msg = resp.choices[0].message
+    fc = getattr(msg, 'function_call', None)
+    if not fc or not getattr(fc, 'arguments', None):
+        return None
+    try:
+        import json
+        parsed = json.loads(fc.arguments)
+        topics = parsed.get('topics', [])
+        norm = []
+        for t in topics:
+            title = (t.get('title') or '').strip()
+            if not title:
+                continue
+            norm.append({
+                'title': title,
+                'description': (t.get('description') or '').strip() or None,
+                'expected_outcomes': (t.get('expected_outcomes') or '').strip() or None,
+                'required_skills': (t.get('required_skills') or '').strip() or None,
+            })
+        return norm or None
+    except Exception:
+        return None
+
+
+def _fallback_extract_topics(text: str) -> List[Dict[str, Any]]:
+    if not text:
+        return []
+    import re
+    parts = re.split(r'[\n;Ð‘â”€â•’\-\u2022]+|\s{2,}', text)
+    res = []
+    for p in parts:
+        title = (p or '').strip(' \t\r\n.-Ð‘â”€â•’')
+        if not title:
+            continue
+        # Avoid overly short tokens
+        if len(title) < 3:
+            continue
+        res.append({'title': title, 'description': None, 'expected_outcomes': None, 'required_skills': None})
+    # Deduplicate by title
+    seen = set()
+    uniq = []
+    for t in res:
+        if t['title'].lower() in seen:
+            continue
+        seen.add(t['title'].lower())
+        uniq.append(t)
+    return uniq
+
+
+@app.post('/api/import-supervisors', response_class=JSONResponse)
+def api_import_supervisors(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
+    try:
+        service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
+        rows = fetch_supervisor_rows(
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=sheet_name,  # default: 2Ð¿â•§ Ð¿â•©Ð¿â•¦Ñâ”‚Ñâ”Œ, Ð¿â•£Ñâ”‚Ð¿â•©Ð¿â•¦ None
+            service_account_file=service_account_file,
+        )
+
+        inserted_users = 0
+        upserted_profiles = 0
+        inserted_topics = 0
+
+        with get_conn() as conn, conn.cursor() as cur:
+            for r in rows:
+                full_name = (r.get('full_name') or '').strip()
+                email = (r.get('email') or '').strip() or None
+                if not (full_name or email):
+                    continue
+
+                # Find or create supervisor user
+                if email:
+                    cur.execute("SELECT id FROM users WHERE LOWER(email)=LOWER(%s) AND role='supervisor' LIMIT 1", (email,))
+                else:
+                    cur.execute("SELECT id FROM users WHERE full_name=%s AND role='supervisor' LIMIT 1", (full_name,))
+                row = cur.fetchone()
+                if row:
+                    user_id = row[0]
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO users(full_name, email, role, created_at, updated_at)
+                        VALUES (%s, %s, 'supervisor', now(), now())
+                        RETURNING id
+                        """, (full_name, email),
+                    )
+                    user_id = cur.fetchone()[0]
+                    inserted_users += 1
+
+                # Update telegram username if provided
+                updates = []
+                params: List[Any] = []
+                if r.get('telegram'):
+                    tg = _normalize_telegram_link(r.get('telegram'))
+                    if tg:
+                        updates.append('username=%s')
+                        params.append(tg)
+                if updates:
+                    params.append(user_id)
+                    cur.execute(f"UPDATE users SET {', '.join(updates)}, updated_at=now() WHERE id=%s", tuple(params))
+
+                # Upsert supervisor profile (interests <- area; requirements <- extra_info)
+                cur.execute('SELECT 1 FROM supervisor_profiles WHERE user_id=%s', (user_id,))
+                exists = cur.fetchone() is not None
+                if exists:
+                    cur.execute(
+                        """
+                        UPDATE supervisor_profiles
+                        SET interests=%s, requirements=%s
+                        WHERE user_id=%s
+                        """,
+                        (r.get('area') or None, r.get('extra_info') or None, user_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (user_id, None, None, None, r.get('area') or None, r.get('extra_info') or None),
+                    )
+                upserted_profiles += 1
+
+                # Extract and insert supervisor's topics (with direction when available)
+                def _insert_from_text(txt: Optional[str], direction: Optional[int]):
+                    nonlocal inserted_topics
+                    if not txt or not (txt.strip()):
+                        return
+                    topics = _llm_extract_topics(txt) or _fallback_extract_topics(txt)
+                    for t in topics:
+                        title = (t.get('title') or '').strip()
+                        if not title:
+                            continue
+                        # Avoid duplicates per direction
+                        cur.execute(
+                            'SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)',
+                            (user_id, title, direction),
+                        )
+                        if cur.fetchone():
+                            continue
+                        cur.execute(
+                            """
+                            INSERT INTO topics(author_user_id, title, description, expected_outcomes,
+                                               required_skills, direction, seeking_role, is_active, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'student', TRUE, now(), now())
+                            """,
+                            (
+                                user_id,
+                                title,
+                                t.get('description'),
+                                t.get('expected_outcomes'),
+                                t.get('required_skills'),
+                                direction,
+                            ),
+                        )
+                        inserted_topics += 1
+
+                # Try per-direction fields first
+                _insert_from_text(r.get('topics_09'), 9)
+                _insert_from_text(r.get('topics_11'), 11)
+                _insert_from_text(r.get('topics_45'), 45)
+                # Fallback to unified text (no direction)
+                if not any((r.get('topics_09'), r.get('topics_11'), r.get('topics_45'))):
+                    _insert_from_text(r.get('topics_text'), None)
+
+        return {
+            'status': 'success',
+            'message': f'Ð¿â‰¤Ð¿â•ªÐ¿Â©Ð¿â•¬Ñâ”€Ñâ”Œ Ñâ”€Ñâ”Ð¿â•¨Ð¿â•¬Ð¿â•¡Ð¿â•¬Ð¿â•¢Ð¿â•¦Ñâ”ŒÐ¿â•£Ð¿â•©Ð¿â•£Ð¿â•§: users+{inserted_users}, profiles~{upserted_profiles}, topics+{inserted_topics}',
+            'stats': {
+                'inserted_users': inserted_users,
+                'upserted_profiles': upserted_profiles,
                 'inserted_topics': inserted_topics,
                 'total_rows_in_sheet': len(rows) if rows else 0,
             }
@@ -507,7 +1219,7 @@ def latest(kind: str = Query('topics', enum=['students', 'supervisors', 'topics'
         else:
             cur.execute(
                 '''
-                SELECT t.id, t.title, t.seeking_role, t.created_at, u.full_name AS author
+                SELECT t.id, t.title, t.seeking_role, t.direction, t.created_at, u.full_name AS author
                 FROM topics t
                 JOIN users u ON u.id = t.author_user_id
                 ORDER BY t.created_at DESC
@@ -538,3 +1250,315 @@ def match_student(student_user_id: int = Form(...)):
     with get_conn() as conn:
         result = handle_match_student(conn, student_user_id=student_user_id)
     return JSONResponse(result)
+
+
+@app.post('/match-supervisor', response_class=JSONResponse)
+def match_supervisor_user(supervisor_user_id: int = Form(...)):
+    with get_conn() as conn:
+        result = handle_match_supervisor_user(conn, supervisor_user_id=supervisor_user_id)
+    return JSONResponse(result)
+
+
+@app.post('/match-role', response_class=JSONResponse)
+def match_role(role_id: int = Form(...)):
+    with get_conn() as conn:
+        result = handle_match_role(conn, role_id=role_id)
+    return JSONResponse(result)
+
+
+@app.get('/media/{media_id}')
+def serve_media(media_id: int):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT object_key, mime_type FROM media_files WHERE id=%s', (media_id,))
+            row = cur.fetchone()
+        if not row:
+            return JSONResponse({'error': 'Not found'}, status_code=404)
+        object_key, mime_type = row
+        file_path = (MEDIA_ROOT / object_key).resolve()
+        if not file_path.exists():
+            return JSONResponse({'error': 'File missing'}, status_code=404)
+        return FileResponse(str(file_path), media_type=(mime_type or 'application/octet-stream'), filename=file_path.name)
+    except Exception as e:
+        return JSONResponse({'error': f'Failed to serve media: {e}'}, status_code=500)
+
+
+@app.get('/api/topic-candidates/{topic_id}', response_class=JSONResponse)
+def api_topic_candidates(topic_id: int, role: Optional[str] = Query(None, pattern='^(student|supervisor)$'), limit: int = Query(5, ge=1, le=50)):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        # topic_candidates ?????? ?????? ??? ?????????????
+        cur.execute(
+            '''
+            SELECT tc.user_id, u.full_name, u.username, u.role, tc.score, tc.rank
+            FROM topic_candidates tc
+            JOIN users u ON u.id = tc.user_id AND u.role = 'supervisor'
+            WHERE tc.topic_id = %s
+            ORDER BY tc.rank ASC NULLS LAST, tc.score DESC NULLS LAST, u.created_at DESC
+            LIMIT %s
+            ''', (topic_id, limit),
+        )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.get('/api/user-candidates/{user_id}', response_class=JSONResponse)
+def api_user_candidates(user_id: int, limit: int = Query(5, ge=1, le=50)):
+    # Back-compat: ??? ???????? ?????????? ???? (student_candidates), ??? ???????????? â‰ˆ ???? (supervisor_candidates)
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT role FROM users WHERE id=%s", (user_id,))
+        row = cur.fetchone()
+        role = (row[0] if row else None)
+        if role == 'student':
+            cur.execute(
+                '''
+                SELECT sc.role_id, r.name AS role_name, sc.score, sc.rank, r.topic_id, t.title AS topic_title
+                FROM student_candidates sc
+                JOIN roles r ON r.id = sc.role_id
+                JOIN topics t ON t.id = r.topic_id
+                WHERE sc.user_id = %s
+                ORDER BY sc.rank ASC NULLS LAST, sc.score DESC NULLS LAST, t.created_at DESC
+                LIMIT %s
+                ''', (user_id, limit),
+            )
+        else:
+            cur.execute(
+                '''
+                SELECT sc.topic_id, t.title, sc.score, sc.rank
+                FROM supervisor_candidates sc
+                JOIN topics t ON t.id = sc.topic_id
+                WHERE sc.user_id = %s
+                ORDER BY sc.rank ASC NULLS LAST, sc.score DESC NULLS LAST, t.created_at DESC
+                LIMIT %s
+                ''', (user_id, limit),
+            )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.get('/api/roles/{role_id}', response_class=JSONResponse)
+def api_get_role(role_id: int):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT r.*, t.title AS topic_title, u.full_name AS author
+            FROM roles r
+            JOIN topics t ON t.id = r.topic_id
+            JOIN users u ON u.id = t.author_user_id
+            WHERE r.id = %s
+            ''', (role_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return JSONResponse({'error': 'Not found'}, status_code=404)
+        return dict(row)
+
+
+@app.get('/api/topics/{topic_id}/roles', response_class=JSONResponse)
+def api_get_topic_roles(topic_id: int, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT r.*
+            FROM roles r
+            WHERE r.topic_id = %s
+            ORDER BY r.created_at DESC
+            OFFSET %s LIMIT %s
+            ''', (topic_id, offset, limit),
+        )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.get('/api/role-candidates/{role_id}', response_class=JSONResponse)
+def api_role_candidates(role_id: int, limit: int = Query(5, ge=1, le=50)):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT rc.user_id, u.full_name, u.username, rc.score, rc.rank
+            FROM role_candidates rc
+            JOIN users u ON u.id = rc.user_id AND u.role = 'student'
+            WHERE rc.role_id = %s
+            ORDER BY rc.rank ASC NULLS LAST, rc.score DESC NULLS LAST, u.created_at DESC
+            LIMIT %s
+            ''', (role_id, limit),
+        )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+# =============================
+# Messages (requests)
+# =============================
+
+
+@app.post('/api/messages/send', response_class=JSONResponse)
+def api_messages_send(
+    sender_user_id: int = Form(...),
+    receiver_user_id: int = Form(...),
+    topic_id: int = Form(...),
+    body: str = Form(...),
+    role_id: Optional[int] = Form(None),
+):
+    msg_id: Optional[int] = None
+    with get_conn() as conn, conn.cursor() as cur:
+        # Validate role belongs to topic
+        if role_id is not None:
+            cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (int(role_id), int(topic_id)))
+            if not cur.fetchone():
+                return {'status': 'error', 'message': 'role does not belong to topic'}
+        cur.execute(
+            '''
+            INSERT INTO messages(sender_user_id, receiver_user_id, topic_id, role_id, body, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, 'pending', now())
+            RETURNING id
+            ''', (sender_user_id, receiver_user_id, topic_id, (int(role_id) if role_id is not None else None), body.strip()),
+        )
+        msg_id = cur.fetchone()[0]
+        conn.commit()
+    return {'status': 'ok', 'message_id': msg_id}
+
+
+@app.get('/api/messages/inbox', response_class=JSONResponse)
+def api_messages_inbox(user_id: int = Query(...), status: Optional[str] = Query(None)):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        if status:
+            cur.execute(
+                '''
+                SELECT m.*, t.title AS topic_title, r.name AS role_name, su.full_name AS sender_name
+                FROM messages m
+                JOIN users su ON su.id = m.sender_user_id
+                JOIN topics t ON t.id = m.topic_id
+                LEFT JOIN roles r ON r.id = m.role_id
+                WHERE m.receiver_user_id = %s AND m.status = %s
+                ORDER BY m.created_at DESC
+                ''', (user_id, status),
+            )
+        else:
+            cur.execute(
+                '''
+                SELECT m.*, t.title AS topic_title, r.name AS role_name, su.full_name AS sender_name
+                FROM messages m
+                JOIN users su ON su.id = m.sender_user_id
+                JOIN topics t ON t.id = m.topic_id
+                LEFT JOIN roles r ON r.id = m.role_id
+                WHERE m.receiver_user_id = %s
+                ORDER BY m.created_at DESC
+                ''', (user_id,),
+            )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.get('/api/messages/outbox', response_class=JSONResponse)
+def api_messages_outbox(user_id: int = Query(...), status: Optional[str] = Query(None)):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        if status:
+            cur.execute(
+                '''
+                SELECT m.*, t.title AS topic_title, r.name AS role_name, ru.full_name AS receiver_name
+                FROM messages m
+                JOIN users ru ON ru.id = m.receiver_user_id
+                JOIN topics t ON t.id = m.topic_id
+                LEFT JOIN roles r ON r.id = m.role_id
+                WHERE m.sender_user_id = %s AND m.status = %s
+                ORDER BY m.created_at DESC
+                ''', (user_id, status),
+            )
+        else:
+            cur.execute(
+                '''
+                SELECT m.*, t.title AS topic_title, r.name AS role_name, ru.full_name AS receiver_name
+                FROM messages m
+                JOIN users ru ON ru.id = m.receiver_user_id
+                JOIN topics t ON t.id = m.topic_id
+                LEFT JOIN roles r ON r.id = m.role_id
+                WHERE m.sender_user_id = %s
+                ORDER BY m.created_at DESC
+                ''', (user_id,),
+            )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.post('/api/messages/respond', response_class=JSONResponse)
+def api_messages_respond(message_id: int = Form(...), responder_user_id: int = Form(...), action: str = Form('accept'), answer: Optional[str] = Form(None)):
+    act = (action or 'accept').strip().lower()
+    if act not in ('accept', 'reject', 'cancel'):
+        return {'status': 'error', 'message': 'invalid action'}
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute('SELECT * FROM messages WHERE id=%s', (message_id,))
+        msg = cur.fetchone()
+        if not msg:
+            return {'status': 'error', 'message': 'message not found'}
+        msg = dict(msg)
+        # Permissions: accept/reject by receiver, cancel by sender
+        if act in ('accept', 'reject') and msg['receiver_user_id'] != responder_user_id:
+            return {'status': 'error', 'message': 'only receiver can accept/reject'}
+        if act == 'cancel' and msg['sender_user_id'] != responder_user_id:
+            return {'status': 'error', 'message': 'only sender can cancel'}
+
+        status = 'accepted' if act == 'accept' else ('rejected' if act == 'reject' else 'canceled')
+        cur.execute('UPDATE messages SET status=%s, answer=%s, responded_at=now() WHERE id=%s', (status, (answer or None), message_id))
+
+        # On accept â‰ˆ set approved links
+        if act == 'accept':
+            if msg.get('role_id'):
+                # Approve student for role (receiver becomes approved student)
+                cur.execute('UPDATE roles SET approved_student_user_id=%s WHERE id=%s', (msg['receiver_user_id'], msg['role_id']))
+            else:
+                # Approve supervisor for topic
+                cur.execute('UPDATE topics SET approved_supervisor_user_id=%s WHERE id=%s', (msg['receiver_user_id'], msg['topic_id']))
+        conn.commit()
+    return {'status': 'ok'}
+
+
+@app.post('/api/roles/{role_id}/clear-approved', response_class=JSONResponse)
+def api_clear_role_approved(role_id: int, by_user_id: int = Form(...)):
+    with get_conn() as conn, conn.cursor() as cur:
+        # Check who is allowed: topic author or approved student
+        cur.execute('SELECT r.approved_student_user_id, t.author_user_id FROM roles r JOIN topics t ON t.id = r.topic_id WHERE r.id=%s', (role_id,))
+        row = cur.fetchone()
+        if not row:
+            return {'status': 'error', 'message': 'role not found'}
+        approved_student_id, author_id = row
+        if (approved_student_id is None) or (by_user_id not in (approved_student_id, author_id)):
+            return {'status': 'error', 'message': 'not allowed'}
+        cur.execute('UPDATE roles SET approved_student_user_id=NULL WHERE id=%s', (role_id,))
+        conn.commit()
+    return {'status': 'ok'}
+
+
+@app.post('/api/topics/{topic_id}/clear-approved-supervisor', response_class=JSONResponse)
+def api_clear_topic_supervisor(topic_id: int, by_user_id: int = Form(...)):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT approved_supervisor_user_id, author_user_id FROM topics WHERE id=%s', (topic_id,))
+        row = cur.fetchone()
+        if not row:
+            return {'status': 'error', 'message': 'topic not found'}
+        approved_supervisor_id, author_id = row
+        if (approved_supervisor_id is None) or (by_user_id not in (approved_supervisor_id, author_id)):
+            return {'status': 'error', 'message': 'not allowed'}
+        cur.execute('UPDATE topics SET approved_supervisor_user_id=NULL WHERE id=%s', (topic_id,))
+        conn.commit()
+    return {'status': 'ok'}
+
+
+@app.get('/api/student-candidates/{user_id}', response_class=JSONResponse)
+def api_student_candidates(user_id: int, limit: int = Query(5, ge=1, le=50)):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT sc.role_id, r.name AS role_name, sc.score, sc.rank, r.topic_id, t.title AS topic_title
+            FROM student_candidates sc
+            JOIN roles r ON r.id = sc.role_id
+            JOIN topics t ON t.id = r.topic_id
+            WHERE sc.user_id = %s
+            ORDER BY sc.rank ASC NULLS LAST, sc.score DESC NULLS LAST, t.created_at DESC
+            LIMIT %s
+            ''', (user_id, limit),
+        )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+

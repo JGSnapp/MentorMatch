@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang='ru'>
+<head>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1' />
+  <title>Профиль руководителя</title>
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin: 20px; line-height: 1.4; }
+    .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 900px; }
+    dt { font-weight: 600; }
+    dd { margin: 0 0 8px 0; }
+    .actions { margin: 12px 0; }
+    a.btn { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; text-decoration:none; }
+    a.btn.secondary { background: #334155; }
+  </style>
+</head>
+<body>
+  <h2>Профиль руководителя #{{ sup.id }}</h2>
+  <div class='actions'>
+    <a class='btn' href='/edit-supervisor/{{ sup.id }}'>Изменить параметры</a>
+    <a class='btn secondary' href='/?kind=supervisors'>Назад к списку</a>
+    <form method='post' action='/do-match-supervisor' style='display:inline; margin-left:8px;'>
+      <input type='hidden' name='supervisor_user_id' value='{{ sup.id }}' />
+      <button type='submit'>Подобрать темы</button>
+    </form>
+  </div>
+  <div class='card'>
+    <dl>
+      <dt>ФИО</dt><dd>{{ sup.full_name }}</dd>
+      <dt>Email</dt><dd>{{ sup.email or '-' }}</dd>
+      <dt>Username (tg)</dt><dd>{{ sup.username or '-' }}</dd>
+      <dt>Должность</dt><dd>{{ sup.position or '-' }}</dd>
+      <dt>Степень</dt><dd>{{ sup.degree or '-' }}</dd>
+      <dt>Лимит</dt><dd>{{ sup.capacity or '-' }}</dd>
+      <dt>Интересы</dt><dd>{{ sup.interests or '-' }}</dd>
+      <dt>Требования</dt><dd>{{ sup.requirements or '-' }}</dd>
+    </dl>
+  </div>
+</body>
+</html>

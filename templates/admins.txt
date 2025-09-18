@@ -1,0 +1,11 @@
+# Один админ на строку. Возможные форматы:
+# - Числовой Telegram user id, например: 123456789
+# - @username, например: @adminuser
+# - Ссылка t.me, например: https://t.me/adminuser
+
+# Примеры:
+# 123456789
+# @my_admin
+# https://t.me/some_admin
+
+@JgSnapp

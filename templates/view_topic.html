@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang='ru'>
+<head>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1' />
+  <title>Профиль темы</title>
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin: 20px; line-height: 1.4; }
+    .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 900px; }
+    dt { font-weight: 600; }
+    dd { margin: 0 0 8px 0; }
+    .actions { margin: 12px 0; }
+    a.btn { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; text-decoration:none; }
+    a.btn.secondary { background: #334155; }
+  </style>
+</head>
+<body>
+  <h2>Тема #{{ topic.id }}</h2>
+  <div class='actions'>
+    <a class='btn' href='/edit-topic/{{ topic.id }}'>Изменить параметры</a>
+    <a class='btn secondary' href='/?kind=topics'>Назад к списку</a>
+    <form method='post' action='/do-match-topic' style='display:inline; margin-left:8px;'>
+      <input type='hidden' name='topic_id' value='{{ topic.id }}' />
+      <input type='hidden' name='target_role' value='{{ topic.seeking_role or "student" }}' />
+      <button type='submit'>Подобрать {{ 'студентов' if (topic.seeking_role or 'student')=='student' else 'руководителей' }}</button>
+    </form>
+  </div>
+  <div class='card'>
+    <dl>
+      <dt>Заголовок</dt><dd>{{ topic.title }}</dd>
+      <dt>Автор</dt><dd>{{ topic.author }}</dd>
+      <dt>Кого ищем</dt><dd>{{ topic.seeking_role }}</dd>
+      <dt>Направление</dt><dd>{{ topic.direction or '-' }}</dd>
+      <dt>Утверждённый руководитель</dt>
+      <dd>
+        {% if topic.approved_supervisor_user_id %}
+          <a href='/user/{{ topic.approved_supervisor_user_id }}'>#{{ topic.approved_supervisor_user_id }}</a>
+          <form method='post' action='/api/topics/{{ topic.id }}/clear-approved-supervisor' style='display:inline;'>
+            <input type='hidden' name='by_user_id' value='{{ topic.author_user_id }}' />
+            <button type='submit'>Снять утверждение</button>
+          </form>
+        {% else %}-{% endif %}
+      </dd>
+      <dt>Активность</dt><dd>{{ 'Да' if topic.is_active else 'Нет' }}</dd>
+      <dt>Требуемые навыки</dt><dd>{{ topic.required_skills or '-' }}</dd>
+      <dt>Ожидаемые результаты</dt><dd>{{ topic.expected_outcomes or '-' }}</dd>
+      <dt>Описание</dt><dd><pre style='white-space: pre-wrap;'>{{ topic.description or '-' }}</pre></dd>
+      <dt>Создана</dt><dd>{{ topic.created_at }}</dd>
+    </dl>
+  </div>
+
+  <div class='card' style='margin-top:12px;'>
+    <h3>Роли</h3>
+    {% if roles %}
+      <ul>
+        {% for r in roles %}
+          <li>
+            <a href='/role/{{ r.id }}'>{{ r.name }}</a>
+            <span class='muted'>— cap: {{ r.capacity or '-' }}</span>
+            <form method='post' action='/do-match-role' style='display:inline;margin-left:10px;'>
+              <input type='hidden' name='role_id' value='{{ r.id }}' />
+              <button type='submit'>Подобрать студентов</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>Ролей пока нет</p>
+    {% endif %}
+    <h4>Добавить роль</h4>
+    <!-- Use admin action wrapper to redirect back to topic page -->
+    <form method='post' action='/add-role'>
+      <input type='hidden' name='topic_id' value='{{ topic.id }}' />
+      <label>Название роли <input type='text' name='name' required></label>
+      <label>Описание <textarea name='description' placeholder='опционально'></textarea></label>
+      <label>Требуемые навыки <input type='text' name='required_skills' placeholder='через запятую, опц.'></label>
+      <label>Вместимость <input type='number' name='capacity' min='0' placeholder='опционально'></label>
+      <button type='submit'>Добавить</button>
+    </form>
+  </div>
+</body>
+</html>

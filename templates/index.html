@@ -23,6 +23,9 @@
     .tabs a.active { background:#0f172a; color:#fff; }
     .msg { padding: 10px 12px; border-radius: 8px; background: #ecfeff; border: 1px solid #a5f3fc; margin-bottom: 12px; }
     .row { display:flex; gap: 12px; align-items:center; }
+    .edit-link { margin-left: 10px; font-size: 0.9rem; }
+    .edit-link a { color: #2563eb; text-decoration: none; border: 1px solid #cbd5e1; padding: 2px 8px; border-radius: 6px; }
+    .edit-link a:hover { background: #eff6ff; }
   </style>
 </head>
 <body>
@@ -43,6 +46,17 @@
         </label>
         <button type='submit'>Импортировать</button>
       </form>
+    </div>
+
+    <div class='card'>
+      <h3>Выгрузить пары (Тема–Роль–Студент–Руководитель) в Google Sheets</h3>
+      <form method='post' action='/export-pairs'>
+        <label>Pairs Spreadsheet ID
+          <input type='text' name='pairs_spreadsheet_id' value='{{ env_pairs_spreadsheet_id }}' placeholder='если пусто — будет использован PAIRS_SPREADSHEET_ID из .env' />
+        </label>
+        <button type='submit'>Выгрузить сейчас</button>
+      </form>
+      <p class='muted'>Будут выгружены все роли с утверждённым студентом (если есть) и руководителем (утверждённый или автор темы).</p>
     </div>
 
     <div class='card'>
@@ -69,6 +83,9 @@
         <label>Описание <textarea name='description'></textarea></label>
         <label>Ожидаемые результаты <textarea name='expected_outcomes'></textarea></label>
         <label>Требуемые навыки <input type='text' name='required_skills' placeholder='через запятую'></label>
+        <label>Направление (9 / 11 / 45)
+          <input type='number' name='direction' min='0' max='99' placeholder='опционально'>
+        </label>
         <label>Кого ищем
           <select name='seeking_role'>
             <option value='student'>student</option>
@@ -103,15 +120,24 @@
     <div class='list'>
       {% if kind == 'topics' %}
         {% for it in items %}
-          <div class='item'><strong>#{{ it.id }}</strong> — {{ it.title }} <span class='muted'>({{ it.seeking_role }})</span> — автор: {{ it.author }} — {{ it.created_at }}</div>
+          <div class='item'>
+            <strong>#{{ it.id }}</strong> — <a href='/topic/{{ it.id }}'>{{ it.title }}</a> <span class='muted'>({{ it.seeking_role }}){% if it.direction %}, напр.: {{ it.direction }}{% endif %}</span> — автор: {{ it.author }} — {{ it.created_at }}
+            <span class='edit-link'><a href='/edit-topic/{{ it.id }}'>Изменить</a></span>
+          </div>
         {% endfor %}
       {% elif kind == 'students' %}
         {% for it in items %}
-          <div class='item'><strong>#{{ it.id }}</strong> — {{ it.full_name }} <span class='muted'>program: {{ it.program or '-' }}</span> — {{ it.created_at }}</div>
+          <div class='item'>
+            <strong>#{{ it.id }}</strong> — <a href='/user/{{ it.id }}'>{{ it.full_name }}</a> <span class='muted'>program: {{ it.program or '-' }}</span> — {{ it.created_at }}
+            <span class='edit-link'><a href='/edit-user/{{ it.id }}'>Изменить</a></span>
+          </div>
         {% endfor %}
       {% else %}
         {% for it in items %}
-          <div class='item'><strong>#{{ it.id }}</strong> — {{ it.full_name }} <span class='muted'>{{ it.position or '-' }}, {{ it.degree or '-' }}</span> — cap: {{ it.capacity or 0 }} — {{ it.created_at }}</div>
+          <div class='item'>
+            <strong>#{{ it.id }}</strong> — <a href='/supervisor/{{ it.id }}'>{{ it.full_name }}</a> <span class='muted'>{{ it.position or '-' }}, {{ it.degree or '-' }}</span> — cap: {{ it.capacity or 0 }} — {{ it.created_at }}
+            <span class='edit-link'><a href='/edit-supervisor/{{ it.id }}'>Изменить</a></span>
+          </div>
         {% endfor %}
       {% endif %}
     </div>

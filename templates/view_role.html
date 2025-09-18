@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang='ru'>
+<head>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1' />
+  <title>Роль</title>
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin: 20px; line-height: 1.4; }
+    .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 900px; }
+    dt { font-weight: 600; }
+    dd { margin: 0 0 8px 0; }
+    .actions { margin: 12px 0; }
+    a.btn, button { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; text-decoration:none; }
+    a.btn.secondary { background: #334155; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border-bottom:1px solid #e2e8f0; padding:6px; text-align:left; }
+  </style>
+  </head>
+<body>
+  <h2>Роль #{{ role.id }} — {{ role.name }}</h2>
+  <div class='actions'>
+    <a class='btn secondary' href='/topic/{{ role.topic_id }}'>Назад к теме</a>
+  </div>
+  <div class='card'>
+    <dl>
+      <dt>Тема</dt><dd>{{ role.topic_title }}</dd>
+      <dt>Автор</dt><dd>{{ role.author }}</dd>
+      <dt>Описание роли</dt><dd>{{ role.description or '-' }}</dd>
+      <dt>Требуемые навыки</dt><dd>{{ role.required_skills or '-' }}</dd>
+      <dt>Вместимость</dt><dd>{{ role.capacity or '-' }}</dd>
+      <dt>Утверждённый студент</dt>
+      <dd>
+        {% if role.approved_student_user_id %}
+          <a href='/user/{{ role.approved_student_user_id }}'>#{{ role.approved_student_user_id }}</a>
+          <form method='post' action='/api/roles/{{ role.id }}/clear-approved' style='display:inline;'>
+            <input type='hidden' name='by_user_id' value='{{ role.author_user_id }}' />
+            <button type='submit'>Снять утверждение</button>
+          </form>
+        {% else %}-{% endif %}
+      </dd>
+    </dl>
+  </div>
+
+  <div class='card' style='margin-top:12px;'>
+    <h3>Кандидаты (топ-10)</h3>
+    {% if candidates %}
+      <table>
+        <tr><th>Место</th><th>Студент</th><th>Username</th><th>Оценка</th></tr>
+        {% for c in candidates %}
+          <tr>
+            <td>{{ c.rank or '-' }}</td>
+            <td><a href='/user/{{ c.user_id }}'>{{ c.full_name }}</a></td>
+            <td>{{ c.username or '-' }}</td>
+            <td>{{ '%.2f'|format(c.score) if c.score is not none else '-' }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p>Пока нет кандидатов.</p>
+    {% endif %}
+    <form method='post' action='/do-match-role' style='margin-top:12px;'>
+      <input type='hidden' name='role_id' value='{{ role.id }}' />
+      <button type='submit'>🧠 Подобрать студентов</button>
+    </form>
+  </div>
+</body>
+</html>
