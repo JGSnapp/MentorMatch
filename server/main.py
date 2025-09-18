@@ -542,7 +542,10 @@ def api_whoami(tg_id: Optional[int] = Query(None), username: Optional[str] = Que
     link = _normalize_telegram_link(username) if username else None
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         if tg_id:
-            cur.execute("SELECT id, full_name, role, email, username FROM users WHERE telegram_id=%s", (int(tg_id),))
+            cur.execute(
+                "SELECT id, full_name, role, email, username, telegram_id, is_confirmed FROM users WHERE telegram_id=%s",
+                (int(tg_id),),
+            )
             rows = [dict(r) for r in cur.fetchall()]
             if rows:
                 return {'status': 'ok', 'matches': rows}
@@ -556,7 +559,11 @@ def api_whoami(tg_id: Optional[int] = Query(None), username: Optional[str] = Que
             params.append(f"https://t.me/{uname}")
         if not clauses:
             return {'status': 'ok', 'matches': []}
-        sql = f"SELECT id, full_name, role, email, username FROM users WHERE (" + " OR ".join(clauses) + ") LIMIT 5"
+        sql = (
+            "SELECT id, full_name, role, email, username, telegram_id, is_confirmed FROM users WHERE ("
+            + " OR ".join(clauses)
+            + ") LIMIT 5"
+        )
         cur.execute(sql, params)
         rows = [dict(r) for r in cur.fetchall()]
         return {'status': 'ok', 'matches': rows}
@@ -567,7 +574,14 @@ def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[int] = Form(None
     link = _normalize_telegram_link(username) if username else None
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE users SET telegram_id=COALESCE(%s, telegram_id), username=COALESCE(%s, username), updated_at=now() WHERE id=%s",
+            """
+            UPDATE users
+            SET telegram_id=COALESCE(%s, telegram_id),
+                username=COALESCE(%s, username),
+                is_confirmed=TRUE,
+                updated_at=now()
+            WHERE id=%s
+            """,
             ((int(tg_id) if tg_id else None), link, user_id),
         )
         conn.commit()
@@ -593,8 +607,8 @@ def api_self_register(role: str = Form(...), full_name: Optional[str] = Form(Non
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             '''
-            INSERT INTO users(full_name, email, username, telegram_id, role, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, now(), now())
+            INSERT INTO users(full_name, email, username, telegram_id, role, is_confirmed, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, TRUE, now(), now())
             RETURNING id
             ''', (
                 (full_name or f'Telegram user {(_extract_tg_username(username) or tg_id or "")}').strip(),

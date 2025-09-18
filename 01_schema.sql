@@ -14,6 +14,7 @@ CREATE TABLE users (
   full_name       TEXT NOT NULL,
   email           TEXT,
   username        TEXT,
+  is_confirmed    BOOLEAN NOT NULL DEFAULT FALSE,
   role            VARCHAR(20) NOT NULL, -- 'student' | 'supervisor' | 'admin'
   embeddings      TEXT,
   consent_personal BOOLEAN,
