@@ -220,14 +220,42 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
 
     # --- Action wrappers (redirect back instead of raw JSON) ---
     @router.post('/add-role')
-    def add_role(topic_id: int = Form(...), name: str = Form(...), description: Optional[str] = Form(None), required_skills: Optional[str] = Form(None), capacity: Optional[int] = Form(None)):
+    def add_role(
+        topic_id: int = Form(...),
+        name: str = Form(...),
+        description: Optional[str] = Form(None),
+        required_skills: Optional[str] = Form(None),
+        capacity: Optional[str] = Form(None),
+    ):
         try:
+            capacity_val: Optional[int]
+            if capacity is None:
+                capacity_val = None
+            else:
+                capacity_str = str(capacity).strip()
+                if not capacity_str:
+                    capacity_val = None
+                else:
+                    try:
+                        capacity_val = int(capacity_str)
+                    except ValueError:
+                        return RedirectResponse(
+                            url=f'/topic/{topic_id}?msg=Некорректная вместимость',
+                            status_code=303,
+                        )
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute(
                     '''
                     INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, now(), now())
-                    ''', (topic_id, name.strip(), (description or None), (required_skills or None), (capacity if capacity is not None else None)),
+                    ''',
+                    (
+                        topic_id,
+                        name.strip(),
+                        (description or None),
+                        (required_skills or None),
+                        capacity_val,
+                    ),
                 )
                 conn.commit()
             return RedirectResponse(url=f'/topic/{topic_id}', status_code=303)
