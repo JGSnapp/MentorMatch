@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from parse_gform import fetch_normalized_rows
 from media_store import persist_media_from_url
+from utils import parse_optional_int
 
 def _normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
     if not raw:
@@ -503,7 +504,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
         username: Optional[str] = Form(None),
         position: Optional[str] = Form(None),
         degree: Optional[str] = Form(None),
-        capacity: Optional[int] = Form(None),
+        capacity: Optional[str] = Form(None),
         requirements: Optional[str] = Form(None),
         interests: Optional[str] = Form(None),
     ):
@@ -522,6 +523,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 )
                 user_id = cur.fetchone()[0]
 
+            capacity_val = parse_optional_int(capacity)
             cur.execute('SELECT 1 FROM supervisor_profiles WHERE user_id=%s', (user_id,))
             if cur.fetchone():
                 cur.execute(
@@ -529,33 +531,35 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     UPDATE supervisor_profiles
                     SET position=%s, degree=%s, capacity=%s, requirements=%s, interests=%s
                     WHERE user_id=%s
-                    ''', (position, degree, capacity, requirements, interests, user_id),
+                    ''', (position, degree, capacity_val, requirements, interests, user_id),
                 )
             else:
                 cur.execute(
                     '''
                     INSERT INTO supervisor_profiles(user_id, position, degree, capacity, requirements, interests)
                     VALUES (%s, %s, %s, %s, %s, %s)
-                    ''', (user_id, position, degree, capacity, requirements, interests),
+                    ''', (user_id, position, degree, capacity_val, requirements, interests),
                 )
 
         return RedirectResponse(url='/?msg=Руководитель добавлен&kind=supervisors', status_code=303)
 
     @router.post('/add-topic')
-    def add_topic(request: Request,
+    def add_topic(
+        request: Request,
         title: str = Form(...),
-        author_user_id: Optional[int] = Form(None),
+        author_user_id: Optional[str] = Form(None),
         author_full_name: Optional[str] = Form(None),
         description: Optional[str] = Form(None),
         expected_outcomes: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
-        direction: Optional[int] = Form(None),
+        direction: Optional[str] = Form(None),
         seeking_role: str = Form('student'),
     ):
         with get_conn() as conn, conn.cursor() as cur:
             uid: Optional[int] = None
-            if author_user_id:
-                uid = int(author_user_id)
+            author_uid = parse_optional_int(author_user_id)
+            if author_uid is not None:
+                uid = author_uid
             elif author_full_name:
                 cur.execute('SELECT id FROM users WHERE full_name=%s LIMIT 1', (author_full_name.strip(),))
                 row = cur.fetchone()
@@ -568,14 +572,26 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 cur.execute("INSERT INTO users(full_name, role, created_at, updated_at) VALUES (%s, 'supervisor', now(), now()) RETURNING id", ('Unknown Supervisor',))
                 uid = cur.fetchone()[0]
 
-            cur.execute('SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)', (uid, title.strip(), (direction if direction is not None else None)))
+            direction_val = parse_optional_int(direction)
+            cur.execute(
+                'SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)',
+                (uid, title.strip(), direction_val),
+            )
             if not cur.fetchone():
                 cur.execute(
                     '''
                     INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills, direction,
                                        seeking_role, is_active, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, now(), now())
-                    ''', (uid, title.strip(), description, expected_outcomes, required_skills, (direction if direction is not None else None), seeking_role),
+                    ''', (
+                        uid,
+                        title.strip(),
+                        description,
+                        expected_outcomes,
+                        required_skills,
+                        direction_val,
+                        seeking_role,
+                    ),
                 )
 
         return RedirectResponse(url='/?msg=Тема добавлена&kind=topics', status_code=303)
@@ -645,12 +661,13 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
         username: Optional[str] = Form(None),
         position: Optional[str] = Form(None),
         degree: Optional[str] = Form(None),
-        capacity: Optional[int] = Form(None),
+        capacity: Optional[str] = Form(None),
         interests: Optional[str] = Form(None),
         requirements: Optional[str] = Form(None),
     ):
         with get_conn() as conn, conn.cursor() as cur:
             # Update user basic fields
+            capacity_val = parse_optional_int(capacity)
             cur.execute(
                 "UPDATE users SET full_name=%s, email=%s, username=%s, role='supervisor', updated_at=now() WHERE id=%s",
                 (full_name.strip(), (email or None), (username or None), user_id),
@@ -663,14 +680,14 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     UPDATE supervisor_profiles
                     SET position=%s, degree=%s, capacity=%s, interests=%s, requirements=%s
                     WHERE user_id=%s
-                    ''', (position, degree, (capacity if capacity is not None else None), interests, requirements, user_id),
+                    ''', (position, degree, capacity_val, interests, requirements, user_id),
                 )
             else:
                 cur.execute(
                     '''
                     INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
                     VALUES (%s, %s, %s, %s, %s, %s)
-                    ''', (user_id, position, degree, (capacity if capacity is not None else None), interests, requirements),
+                    ''', (user_id, position, degree, capacity_val, interests, requirements),
                 )
         return RedirectResponse(url='/?msg=Руководитель обновлён&kind=supervisors', status_code=303)
 
@@ -698,19 +715,29 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
         description: Optional[str] = Form(None),
         expected_outcomes: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
-        direction: Optional[int] = Form(None),
+        direction: Optional[str] = Form(None),
         seeking_role: str = Form('student'),
         is_active: Optional[str] = Form(None),
     ):
         active = str(is_active or '').lower() in ('1','true','on','yes','y')
         with get_conn() as conn, conn.cursor() as cur:
+            direction_val = parse_optional_int(direction)
             cur.execute(
                 '''
                 UPDATE topics
                 SET title=%s, description=%s, expected_outcomes=%s, required_skills=%s,
                     direction=%s, seeking_role=%s, is_active=%s, updated_at=now()
                 WHERE id=%s
-                ''', (title.strip(), (description or None), (expected_outcomes or None), (required_skills or None), (direction if direction is not None else None), seeking_role, active, topic_id),
+                ''', (
+                    title.strip(),
+                    (description or None),
+                    (expected_outcomes or None),
+                    (required_skills or None),
+                    direction_val,
+                    seeking_role,
+                    active,
+                    topic_id,
+                ),
             )
         return RedirectResponse(url='/?msg=Тема обновлена&kind=topics', status_code=303)
 
@@ -778,14 +805,15 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
         name: str = Form(...),
         description: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
-        capacity: Optional[int] = Form(None),
+        capacity: Optional[str] = Form(None),
     ):
         with get_conn() as conn, conn.cursor() as cur:
+            capacity_val = parse_optional_int(capacity)
             cur.execute(
                 '''
                 INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, now(), now())
-                ''', (topic_id, name.strip(), (description or None), (required_skills or None), (capacity if capacity is not None else None)),
+                ''', (topic_id, name.strip(), (description or None), (required_skills or None), capacity_val),
             )
         # Best-effort export to pairs sheet
         try:
