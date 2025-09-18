@@ -232,6 +232,8 @@ class MentorMatchBot:
 
     # Commands
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        context.user_data.pop('awaiting', None)
+        context.user_data.pop('topic_role', None)
         # Admins: старое меню целиком
         if self._is_admin(update):
             kb = [
@@ -252,6 +254,32 @@ class MentorMatchBot:
         uname = getattr(u, 'username', None)
         who = await self._api_get(f"/api/whoami?tg_id={tg_id or ''}&username={uname or ''}") or {}
         matches = who.get('matches') or []
+        if matches:
+            confirmed_match: Optional[Dict[str, Any]] = None
+            # Prefer exact Telegram ID match
+            for m in matches:
+                try:
+                    match_tid = m.get('telegram_id')
+                    if match_tid is None or tg_id is None:
+                        continue
+                    if int(match_tid) == int(tg_id):
+                        confirmed_match = m
+                        break
+                except Exception:
+                    continue
+            if not confirmed_match:
+                for m in matches:
+                    if m.get('is_confirmed'):
+                        confirmed_match = m
+                        break
+            if confirmed_match:
+                try:
+                    context.user_data['uid'] = int(confirmed_match.get('id'))
+                except Exception:
+                    context.user_data['uid'] = confirmed_match.get('id')
+                context.user_data['role'] = confirmed_match.get('role')
+                await self._show_role_menu(update, context)
+                return
         if not matches:
             # Не нашли — спросим роль
             text = 'Мы не нашли вашу запись из формы. Вы студент или научный руководитель?'
@@ -800,17 +828,48 @@ class MentorMatchBot:
             else:
                 await update.message.reply_text(self._fix_text('Не удалось добавить научного руководителя. Попробуйте ещё раз или используйте веб-админку.'))
         elif awaiting == 'add_topic_title':
+            if not text:
+                await update.message.reply_text(self._fix_text('Название темы не может быть пустым. Введите название или /start для отмены.'))
+                return
             role = context.user_data.get('topic_role') or 'student'
-            payload = {
+            uid = context.user_data.get('uid')
+            endpoint = '/api/add-topic'
+            payload: Dict[str, Any] = {
                 'title': text,
                 'seeking_role': role,
-                'author_full_name': (getattr(update.effective_user, 'full_name', None) or 'Неизвестный руководитель'),
             }
-            res = await self._api_post('/add-topic', data=payload)
+            if uid:
+                payload['author_user_id'] = str(uid)
+            else:
+                endpoint = '/add-topic'
+                payload['author_full_name'] = (
+                    getattr(update.effective_user, 'full_name', None) or 'Неизвестный автор'
+                )
+            res = await self._api_post(endpoint, data=payload)
             context.user_data['awaiting'] = None
             context.user_data.pop('topic_role', None)
-            if res and res.get('status', 'success') in ('success', 'ok'):
-                await update.message.reply_text(self._fix_text('Тема добавлена.'), reply_markup=self._mk([[InlineKeyboardButton('📚 К темам', callback_data='list_topics')]]))
+            if not res:
+                await update.message.reply_text(self._fix_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.'))
+                return
+            status = (res.get('status') or '').lower()
+            if status in {'ok', 'success'}:
+                duplicate = (res.get('message') == 'duplicate')
+                topic_id_raw = res.get('topic_id')
+                topic_id: Optional[int]
+                if isinstance(topic_id_raw, int):
+                    topic_id = topic_id_raw
+                else:
+                    try:
+                        topic_id = int(str(topic_id_raw))
+                    except Exception:
+                        topic_id = None
+                kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('📚 Мои темы', callback_data='my_topics')]]
+                if topic_id:
+                    kb.insert(0, [InlineKeyboardButton('🔍 Открыть тему', callback_data=f'topic_{topic_id}')])
+                elif endpoint == '/add-topic':
+                    kb.insert(0, [InlineKeyboardButton('📚 К темам', callback_data='list_topics')])
+                msg = 'Такая тема у вас уже есть.' if duplicate else 'Тема добавлена.'
+                await update.message.reply_text(self._fix_text(msg), reply_markup=self._mk(kb))
             else:
                 await update.message.reply_text(self._fix_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.'))
         elif awaiting == 'add_role_name':

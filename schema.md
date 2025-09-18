@@ -10,6 +10,7 @@
 - full_name: text, NOT NULL
 - email: text
 - username: text — Telegram (полная ссылка вида https://t.me/<username>)
+- is_confirmed: boolean — подтверждён ли пользователь в Telegram
 - role: varchar(20), NOT NULL — 'student' | 'supervisor' | 'admin'
 - embeddings: text
 - consent_personal: boolean — согласие на обработку персональных данных
