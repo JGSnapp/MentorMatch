@@ -56,6 +56,15 @@ class MentorMatchBot:
                     pass
         return InlineKeyboardMarkup(kb)
 
+    def _should_skip_optional(self, text: Optional[str]) -> bool:
+        if text is None:
+            return True
+        stripped = text.strip()
+        if not stripped:
+            return True
+        lowered = stripped.lower()
+        return lowered in {'-', 'пропустить', 'skip', 'нет'}
+
     def run(self) -> None:
         self.app.run_polling()
 
@@ -74,6 +83,7 @@ class MentorMatchBot:
         self.app.add_handler(CallbackQueryHandler(self.cb_add_supervisor_start, pattern=r'^add_supervisor$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_add_topic_start, pattern=r'^add_topic$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_add_topic_choose, pattern=r'^add_topic_role_(student|supervisor)$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_add_role_start, pattern=r'^add_role_\d+$'))
 
         # Identity & Profiles
         self.app.add_handler(CallbackQueryHandler(self.cb_confirm_me, pattern=r'^confirm_me_\d+$'))
@@ -505,6 +515,16 @@ class MentorMatchBot:
         if not t:
             await q.edit_message_text(self._fix_text('Не удалось загрузить тему'))
             return
+        author_id = t.get('author_user_id')
+        uid = context.user_data.get('uid')
+        can_add_role = False
+        if self._is_admin(update):
+            can_add_role = True
+        elif uid is not None and author_id is not None:
+            try:
+                can_add_role = int(author_id) == int(uid)
+            except Exception:
+                can_add_role = author_id == uid
         role = t.get('seeking_role')
         text = (
             f"Тема: {t.get('title','–')}\n"
@@ -525,6 +545,8 @@ class MentorMatchBot:
             kb.append([InlineKeyboardButton(f"🎭 {name}", callback_data=f"role_{r.get('id')}")])
         if not roles:
             lines2.append('— нет ролей —')
+        if can_add_role:
+            kb.append([InlineKeyboardButton('➕ Добавить роль', callback_data=f'add_role_{tid}')])
         kb.append([InlineKeyboardButton('🧑‍🏫 Подобрать научного руководителя', callback_data=f'match_supervisor_{tid}')])
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text('\n'.join(lines2)), reply_markup=self._mk(kb))
@@ -726,6 +748,40 @@ class MentorMatchBot:
         context.user_data['topic_role'] = role
         await q.edit_message_text(self._fix_text('Введите название темы сообщением. Для отмены — /start'))
 
+    async def cb_add_role_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        try:
+            tid = int(q.data.rsplit('_', 1)[1])
+        except Exception:
+            await q.edit_message_text(self._fix_text('Некорректный идентификатор темы для добавления роли.'))
+            return
+        topic = await self._api_get(f'/api/topics/{tid}')
+        if not topic:
+            await q.edit_message_text(self._fix_text('Тема не найдена.'))
+            return
+        author_id = topic.get('author_user_id')
+        uid = context.user_data.get('uid')
+        allowed = False
+        if self._is_admin(update):
+            allowed = True
+        elif uid is not None and author_id is not None:
+            try:
+                allowed = int(author_id) == int(uid)
+            except Exception:
+                allowed = author_id == uid
+        if not allowed:
+            try:
+                await q.answer(self._fix_text('У вас нет прав добавлять роли к этой теме.'), show_alert=True)
+            except Exception:
+                pass
+            return
+        context.user_data['awaiting'] = 'add_role_name'
+        context.user_data['add_role_topic_id'] = tid
+        context.user_data['add_role_payload'] = {}
+        context.user_data['add_role_topic_title'] = topic.get('title')
+        prompt = f"Введите название роли для темы «{topic.get('title','–')}». Для отмены — /start"
+        await q.edit_message_text(self._fix_text(prompt))
+
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         awaiting = context.user_data.get('awaiting')
         if not awaiting:
@@ -757,6 +813,80 @@ class MentorMatchBot:
                 await update.message.reply_text(self._fix_text('Тема добавлена.'), reply_markup=self._mk([[InlineKeyboardButton('📚 К темам', callback_data='list_topics')]]))
             else:
                 await update.message.reply_text(self._fix_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.'))
+        elif awaiting == 'add_role_name':
+            if not text:
+                await update.message.reply_text(self._fix_text('Название роли не может быть пустым. Введите название или /start для отмены.'))
+                return
+            payload = context.user_data.get('add_role_payload') or {}
+            payload['name'] = text
+            context.user_data['add_role_payload'] = payload
+            context.user_data['awaiting'] = 'add_role_description'
+            await update.message.reply_text(self._fix_text('Введите описание роли (или "-" чтобы пропустить).'))
+        elif awaiting == 'add_role_description':
+            payload = context.user_data.get('add_role_payload') or {}
+            if self._should_skip_optional(text):
+                payload['description'] = None
+            else:
+                payload['description'] = text
+            context.user_data['add_role_payload'] = payload
+            context.user_data['awaiting'] = 'add_role_skills'
+            await update.message.reply_text(self._fix_text('Укажите требуемые навыки (или "-" чтобы пропустить).'))
+        elif awaiting == 'add_role_skills':
+            payload = context.user_data.get('add_role_payload') or {}
+            if self._should_skip_optional(text):
+                payload['required_skills'] = None
+            else:
+                payload['required_skills'] = text
+            context.user_data['add_role_payload'] = payload
+            context.user_data['awaiting'] = 'add_role_capacity'
+            await update.message.reply_text(self._fix_text('Укажите вместимость роли числом (или "-" чтобы пропустить).'))
+        elif awaiting == 'add_role_capacity':
+            payload = context.user_data.get('add_role_payload') or {}
+            capacity_val: Optional[int]
+            if self._should_skip_optional(text):
+                capacity_val = None
+            else:
+                try:
+                    capacity_val = int(text)
+                    if capacity_val < 0:
+                        raise ValueError('negative capacity')
+                except Exception:
+                    await update.message.reply_text(self._fix_text('Вместимость должна быть числом. Введите число или "-" чтобы пропустить.'))
+                    return
+            payload['capacity'] = capacity_val
+            context.user_data['add_role_payload'] = payload
+            topic_id = context.user_data.get('add_role_topic_id')
+            topic_title = context.user_data.get('add_role_topic_title')
+            if not topic_id or not payload.get('name'):
+                context.user_data['awaiting'] = None
+                context.user_data.pop('add_role_payload', None)
+                context.user_data.pop('add_role_topic_id', None)
+                context.user_data.pop('add_role_topic_title', None)
+                await update.message.reply_text(self._fix_text('Не удалось определить тему для роли. Начните заново /start.'))
+                return
+            data = {
+                'topic_id': str(topic_id),
+                'name': payload.get('name').strip(),
+            }
+            if payload.get('description'):
+                data['description'] = payload['description']
+            if payload.get('required_skills'):
+                data['required_skills'] = payload['required_skills']
+            if payload.get('capacity') is not None:
+                data['capacity'] = str(payload['capacity'])
+            res = await self._api_post('/api/add-role', data=data)
+            context.user_data['awaiting'] = None
+            context.user_data.pop('add_role_payload', None)
+            context.user_data.pop('add_role_topic_id', None)
+            context.user_data.pop('add_role_topic_title', None)
+            if not res or res.get('status') not in ('ok', 'success'):
+                await update.message.reply_text(self._fix_text('Не удалось добавить роль. Попробуйте позже или используйте веб-админку.'))
+                return
+            kb = [[InlineKeyboardButton('📚 К теме', callback_data=f'topic_{topic_id}')]]
+            role_name = payload.get('name')
+            topic_str = topic_title or f'#{topic_id}'
+            msg = f'Роль "{role_name}" добавлена к теме «{topic_str}».'
+            await update.message.reply_text(self._fix_text(msg), reply_markup=self._mk(kb))
 
     async def cb_match_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()

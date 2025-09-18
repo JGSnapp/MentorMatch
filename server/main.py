@@ -370,7 +370,8 @@ def api_get_topics(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, 
         cur.execute(
             '''
             SELECT t.id, t.title, t.description, t.seeking_role, t.created_at,
-                   u.full_name AS author, t.expected_outcomes, t.required_skills, t.direction
+                   u.full_name AS author, t.expected_outcomes, t.required_skills, t.direction,
+                   t.author_user_id
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
             WHERE t.is_active = TRUE
@@ -388,7 +389,8 @@ def api_get_topic(topic_id: int):
         cur.execute(
             '''
             SELECT t.id, t.title, t.description, t.seeking_role, t.created_at,
-                   u.full_name AS author, t.expected_outcomes, t.required_skills, t.direction
+                   u.full_name AS author, t.expected_outcomes, t.required_skills, t.direction,
+                   t.author_user_id
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
             WHERE t.id = %s AND t.is_active = TRUE
