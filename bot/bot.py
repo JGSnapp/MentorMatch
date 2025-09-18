@@ -88,7 +88,23 @@ class MentorMatchBot:
         self.app.add_handler(CallbackQueryHandler(self.cb_view_topic, pattern=r'^topic_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_view_role, pattern=r'^role_\d+$'))
 
-    
+        # Matching actions
+        self.app.add_handler(CallbackQueryHandler(self.cb_match_student, pattern=r'^match_student_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_match_supervisor, pattern=r'^match_supervisor_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_match_students_for_topic, pattern=r'^match_students_topic_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_match_students_for_role, pattern=r'^match_role_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_match_topics_for_supervisor, pattern=r'^match_topics_for_supervisor_\d+$'))
+
+        # Back to main
+        self.app.add_handler(CallbackQueryHandler(self.cb_back, pattern=r'^back_to_main$'))
+
+        # Error handler
+        self.app.add_error_handler(self.on_error)
+
+        # Text input handler for simple add flows
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
+
+
     async def cb_view_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()
         try:
@@ -126,19 +142,6 @@ class MentorMatchBot:
             kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{topic_id}')])
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
-    # Matching actions
-        self.app.add_handler(CallbackQueryHandler(self.cb_match_student, pattern=r'^match_student_\d+$'))
-        self.app.add_handler(CallbackQueryHandler(self.cb_match_supervisor, pattern=r'^match_supervisor_\d+$'))
-        self.app.add_handler(CallbackQueryHandler(self.cb_match_students_for_topic, pattern=r'^match_students_topic_\d+$'))
-        self.app.add_handler(CallbackQueryHandler(self.cb_match_students_for_role, pattern=r'^match_role_\d+$'))
-        self.app.add_handler(CallbackQueryHandler(self.cb_match_topics_for_supervisor, pattern=r'^match_topics_for_supervisor_\d+$'))
-
-        # Back to main
-        self.app.add_handler(CallbackQueryHandler(self.cb_back, pattern=r'^back_to_main$'))
-        # Error handler
-        self.app.add_error_handler(self.on_error)
-        # Text input handler for simple add flows
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
     async def cmd_start2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await self.cmd_start(update, context)
 
