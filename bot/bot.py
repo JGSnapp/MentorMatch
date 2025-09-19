@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class MentorMatchBot:
+    EDIT_KEEP = '__keep__'
+
     def __init__(self) -> None:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not token:
@@ -65,6 +67,33 @@ class MentorMatchBot:
         lowered = stripped.lower()
         return lowered in {'-', 'пропустить', 'skip', 'нет'}
 
+    def _normalize_edit_input(self, text: Optional[str]) -> Optional[str]:
+        """Interpret user input for edit flows."""
+        if text is None:
+            return self.EDIT_KEEP
+        stripped = text.strip()
+        if not stripped:
+            return None
+        lowered = stripped.lower()
+        if lowered in {'пропустить', 'оставить', 'skip', 'keep', 'оставь', 'не менять'}:
+            return self.EDIT_KEEP
+        if lowered in {'очистить', 'удалить', 'clear', '-', 'нет'}:
+            return None
+        return text
+
+    def _normalize_role_value(self, text: Optional[str]) -> Optional[str]:
+        if text is None:
+            return None
+        mapping = {
+            'student': 'student',
+            'студент': 'student',
+            'студенты': 'student',
+            'supervisor': 'supervisor',
+            'руководитель': 'supervisor',
+            'научный руководитель': 'supervisor',
+        }
+        return mapping.get(text.strip().lower())
+
     def run(self) -> None:
         self.app.run_polling()
 
@@ -97,6 +126,10 @@ class MentorMatchBot:
         self.app.add_handler(CallbackQueryHandler(self.cb_view_supervisor, pattern=r'^supervisor_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_view_topic, pattern=r'^topic_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_view_role, pattern=r'^role_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_edit_student_start, pattern=r'^edit_student_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_edit_supervisor_start, pattern=r'^edit_supervisor_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_edit_topic_start, pattern=r'^edit_topic_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_edit_role_start, pattern=r'^edit_role_\d+$'))
 
         # Matching actions
         self.app.add_handler(CallbackQueryHandler(self.cb_match_student, pattern=r'^match_student_\d+$'))
@@ -126,6 +159,14 @@ class MentorMatchBot:
         if not r:
             await q.edit_message_text(self._fix_text('Роль не найдена'))
             return
+        viewer_id = context.user_data.get('uid')
+        author_id = r.get('author_user_id')
+        can_edit = self._is_admin(update)
+        if not can_edit and viewer_id is not None and author_id is not None:
+            try:
+                can_edit = int(viewer_id) == int(author_id)
+            except Exception:
+                can_edit = viewer_id == author_id
         lines: List[str] = [
             f"Роль: {r.get('name') or ''}",
             f"Тема: {r.get('topic_title') or ''}",
@@ -144,14 +185,55 @@ class MentorMatchBot:
                 uname_str = f" ({uname})" if uname else ""
                 lines.append(f"#{it.get('rank')}. {it.get('full_name','')}" + uname_str + f" (балл={it.get('score')})")
         text = '\n'.join(lines)
-        kb: List[List[InlineKeyboardButton]] = [
-            [InlineKeyboardButton('🧠 Подобрать студентов', callback_data=f'match_role_{rid}')]
-        ]
+        kb: List[List[InlineKeyboardButton]] = []
+        if can_edit:
+            kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
+        kb.append([InlineKeyboardButton('🧠 Подобрать студентов', callback_data=f'match_role_{rid}')])
         topic_id = r.get('topic_id')
         if topic_id:
             kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{topic_id}')])
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
+
+    async def cb_edit_role_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        try:
+            rid = int(q.data.split('_')[2])
+        except Exception:
+            await q.answer(self._fix_text('Некорректный идентификатор роли.'), show_alert=True)
+            return
+        role = await self._api_get(f'/api/roles/{rid}')
+        if not role:
+            await q.edit_message_text(self._fix_text('Роль не найдена.'))
+            return
+        viewer_id = context.user_data.get('uid')
+        author_id = role.get('author_user_id')
+        is_admin = self._is_admin(update)
+        if not is_admin:
+            if viewer_id is None or author_id is None:
+                await q.answer(self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
+                return
+            try:
+                if int(viewer_id) != int(author_id):
+                    await q.answer(self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
+                    return
+            except Exception:
+                if viewer_id != author_id:
+                    await q.answer(self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
+                    return
+        context.user_data['awaiting'] = 'edit_role_name'
+        payload: Dict[str, Any] = {'role_id': rid}
+        if viewer_id is not None and not is_admin:
+            payload['editor_user_id'] = str(viewer_id)
+        context.user_data['edit_role_payload'] = payload
+        context.user_data['edit_role_original'] = role
+        prompt = (
+            f"Редактирование роли.\n"
+            f"Текущее название: {role.get('name') or '–'}.\n"
+            "Введите новое название. Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+        )
+        await q.message.reply_text(self._fix_text(prompt))
+
     async def cmd_start2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await self.cmd_start(update, context)
 
@@ -234,6 +316,19 @@ class MentorMatchBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('awaiting', None)
         context.user_data.pop('topic_role', None)
+        for key in (
+            'add_topic_payload',
+            'add_topic_endpoint',
+            'edit_student_payload',
+            'edit_student_original',
+            'edit_supervisor_payload',
+            'edit_supervisor_original',
+            'edit_topic_payload',
+            'edit_topic_original',
+            'edit_role_payload',
+            'edit_role_original',
+        ):
+            context.user_data.pop(key, None)
         # Admins: старое меню целиком
         if self._is_admin(update):
             kb = [
@@ -469,6 +564,13 @@ class MentorMatchBot:
         if not s:
             await q.edit_message_text(self._fix_text('Не удалось загрузить профиль студента'))
             return
+        viewer_id = context.user_data.get('uid')
+        can_edit = self._is_admin(update)
+        if not can_edit and viewer_id is not None and sid is not None:
+            try:
+                can_edit = int(viewer_id) == int(sid)
+            except Exception:
+                can_edit = viewer_id == sid
         # Header
         lines = [
             f"Студент: {s.get('full_name','–')}",
@@ -494,11 +596,46 @@ class MentorMatchBot:
                 for it in rec:
                     lines.append(f"• #{it.get('rank')}. {it.get('title','–')} (балл={it.get('score')})")
         text = '\n'.join(lines)
-        kb = [
-            [InlineKeyboardButton('🧠 Подобрать роль', callback_data=f'match_student_{sid}')],
-            [InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')],
-        ]
+        kb: List[List[InlineKeyboardButton]] = []
+        if can_edit:
+            kb.append([InlineKeyboardButton('✏️ Редактировать профиль', callback_data=f'edit_student_{sid}')])
+        kb.append([InlineKeyboardButton('🧠 Подобрать роль', callback_data=f'match_student_{sid}')])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
+
+    async def cb_edit_student_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        try:
+            sid = int(q.data.split('_')[2])
+        except Exception:
+            await q.answer(self._fix_text('Некорректный идентификатор студента.'), show_alert=True)
+            return
+        viewer_id = context.user_data.get('uid')
+        if not self._is_admin(update):
+            if viewer_id is None:
+                await q.answer(self._fix_text('Вы не авторизованы для редактирования.'), show_alert=True)
+                return
+            try:
+                if int(viewer_id) != int(sid):
+                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    return
+            except Exception:
+                if viewer_id != sid:
+                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    return
+        student = await self._api_get(f'/api/students/{sid}')
+        if not student:
+            await q.edit_message_text(self._fix_text('Профиль студента не найден.'))
+            return
+        context.user_data['awaiting'] = 'edit_student_program'
+        context.user_data['edit_student_payload'] = {'user_id': sid}
+        context.user_data['edit_student_original'] = student
+        prompt = (
+            f"Редактирование профиля студента.\n"
+            f"Текущая программа: {student.get('program') or '–'}.\n"
+            "Введите новое значение. Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+        )
+        await q.message.reply_text(self._fix_text(prompt))
 
     async def cb_view_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()
@@ -513,6 +650,13 @@ class MentorMatchBot:
         if not s:
             await q.edit_message_text(self._fix_text('Не удалось загрузить профиль научного руководителя'))
             return
+        viewer_id = context.user_data.get('uid')
+        can_edit = self._is_admin(update)
+        if not can_edit and viewer_id is not None and uid is not None:
+            try:
+                can_edit = int(viewer_id) == int(uid)
+            except Exception:
+                can_edit = viewer_id == uid
         lines = [
             f"Научный руководитель: {s.get('full_name','–')}",
             f"Username: {s.get('username') or '–'}",
@@ -530,11 +674,46 @@ class MentorMatchBot:
             for it in rec:
                 lines.append(f"• #{it.get('rank')}. {it.get('title','–')} (балл={it.get('score')})")
         text = '\n'.join(lines)
-        kb = [
-            [InlineKeyboardButton('🧠 Подобрать тему', callback_data=f'match_topics_for_supervisor_{uid}')],
-            [InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')],
-        ]
+        kb: List[List[InlineKeyboardButton]] = []
+        if can_edit:
+            kb.append([InlineKeyboardButton('✏️ Редактировать профиль', callback_data=f'edit_supervisor_{uid}')])
+        kb.append([InlineKeyboardButton('🧠 Подобрать тему', callback_data=f'match_topics_for_supervisor_{uid}')])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
+
+    async def cb_edit_supervisor_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        try:
+            uid = int(q.data.split('_')[2])
+        except Exception:
+            await q.answer(self._fix_text('Некорректный идентификатор профиля.'), show_alert=True)
+            return
+        viewer_id = context.user_data.get('uid')
+        if not self._is_admin(update):
+            if viewer_id is None:
+                await q.answer(self._fix_text('Вы не авторизованы для редактирования.'), show_alert=True)
+                return
+            try:
+                if int(viewer_id) != int(uid):
+                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    return
+            except Exception:
+                if viewer_id != uid:
+                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    return
+        supervisor = await self._api_get(f'/api/supervisors/{uid}')
+        if not supervisor:
+            await q.edit_message_text(self._fix_text('Профиль руководителя не найден.'))
+            return
+        context.user_data['awaiting'] = 'edit_supervisor_position'
+        context.user_data['edit_supervisor_payload'] = {'user_id': uid}
+        context.user_data['edit_supervisor_original'] = supervisor
+        prompt = (
+            f"Редактирование профиля руководителя.\n"
+            f"Текущая должность: {supervisor.get('position') or '–'}.\n"
+            "Введите новое значение. Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+        )
+        await q.message.reply_text(self._fix_text(prompt))
 
     async def cb_view_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()
@@ -574,10 +753,50 @@ class MentorMatchBot:
         if not roles:
             lines2.append('— нет ролей —')
         if can_add_role:
+            kb.insert(0, [InlineKeyboardButton('✏️ Редактировать тему', callback_data=f'edit_topic_{tid}')])
             kb.append([InlineKeyboardButton('➕ Добавить роль', callback_data=f'add_role_{tid}')])
         kb.append([InlineKeyboardButton('🧑‍🏫 Подобрать научного руководителя', callback_data=f'match_supervisor_{tid}')])
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text('\n'.join(lines2)), reply_markup=self._mk(kb))
+
+    async def cb_edit_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await q.answer()
+        try:
+            tid = int(q.data.split('_')[2])
+        except Exception:
+            await q.answer(self._fix_text('Некорректный идентификатор темы.'), show_alert=True)
+            return
+        topic = await self._api_get(f'/api/topics/{tid}')
+        if not topic:
+            await q.edit_message_text(self._fix_text('Тема не найдена.'))
+            return
+        author_id = topic.get('author_user_id')
+        viewer_id = context.user_data.get('uid')
+        is_admin = self._is_admin(update)
+        if not is_admin:
+            if viewer_id is None or author_id is None:
+                await q.answer(self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
+                return
+            try:
+                if int(viewer_id) != int(author_id):
+                    await q.answer(self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
+                    return
+            except Exception:
+                if viewer_id != author_id:
+                    await q.answer(self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
+                    return
+        context.user_data['awaiting'] = 'edit_topic_title'
+        payload: Dict[str, Any] = {'topic_id': tid}
+        if viewer_id is not None and not is_admin:
+            payload['editor_user_id'] = str(viewer_id)
+        context.user_data['edit_topic_payload'] = payload
+        context.user_data['edit_topic_original'] = topic
+        prompt = (
+            f"Редактирование темы.\n"
+            f"Текущее название: {topic.get('title') or '–'}.\n"
+            "Введите новое название. Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+        )
+        await q.message.reply_text(self._fix_text(prompt))
 
     # Matching
     async def cb_match_student(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -762,6 +981,8 @@ class MentorMatchBot:
 
     async def cb_add_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()
+        context.user_data['add_topic_payload'] = {}
+        context.user_data['add_topic_endpoint'] = None
         kb = [
             [InlineKeyboardButton('🎓 Ищу студента', callback_data='add_topic_role_student')],
             [InlineKeyboardButton('🧑‍🏫 Ищу научного руководителя', callback_data='add_topic_role_supervisor')],
@@ -774,7 +995,12 @@ class MentorMatchBot:
         role = 'student' if q.data.endswith('_student') else 'supervisor'
         context.user_data['awaiting'] = 'add_topic_title'
         context.user_data['topic_role'] = role
-        await q.edit_message_text(self._fix_text('Введите название темы сообщением. Для отмены — /start'))
+        payload = context.user_data.get('add_topic_payload') or {}
+        payload['seeking_role'] = role
+        context.user_data['add_topic_payload'] = payload
+        await q.edit_message_text(
+            self._fix_text('Введите название темы сообщением. После этого мы уточним описание и другие поля. Для отмены — /start')
+        )
 
     async def cb_add_role_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()
@@ -815,6 +1041,7 @@ class MentorMatchBot:
         if not awaiting:
             return
         text = (update.message.text or '').strip()
+
         if awaiting == 'add_supervisor_name':
             payload = {
                 'full_name': text,
@@ -824,93 +1051,129 @@ class MentorMatchBot:
             res = await self._api_post('/add-supervisor', data=payload)
             context.user_data['awaiting'] = None
             if res and res.get('status', 'success') in ('success', 'ok'):
-                await update.message.reply_text(self._fix_text('Научный руководитель добавлен.'), reply_markup=self._mk([[InlineKeyboardButton('🧑‍🏫 К научным руководителям', callback_data='list_supervisors')]]))
-            else:
-                await update.message.reply_text(self._fix_text('Не удалось добавить научного руководителя. Попробуйте ещё раз или используйте веб-админку.'))
-        elif awaiting == 'add_topic_title':
-            if not text:
-                await update.message.reply_text(self._fix_text('Название темы не может быть пустым. Введите название или /start для отмены.'))
-                return
-            role = context.user_data.get('topic_role') or 'student'
-            uid = context.user_data.get('uid')
-            endpoint = '/api/add-topic'
-            payload: Dict[str, Any] = {
-                'title': text,
-                'seeking_role': role,
-            }
-            if uid:
-                payload['author_user_id'] = str(uid)
-            else:
-                endpoint = '/add-topic'
-                payload['author_full_name'] = (
-                    getattr(update.effective_user, 'full_name', None) or 'Неизвестный автор'
+                await update.message.reply_text(
+                    self._fix_text('Научный руководитель добавлен.'),
+                    reply_markup=self._mk([[InlineKeyboardButton('🧑‍🏫 К научным руководителям', callback_data='list_supervisors')]]),
                 )
-            res = await self._api_post(endpoint, data=payload)
-            context.user_data['awaiting'] = None
-            context.user_data.pop('topic_role', None)
-            if not res:
-                await update.message.reply_text(self._fix_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.'))
-                return
-            status = (res.get('status') or '').lower()
-            if status in {'ok', 'success'}:
-                duplicate = (res.get('message') == 'duplicate')
-                topic_id_raw = res.get('topic_id')
-                topic_id: Optional[int]
-                if isinstance(topic_id_raw, int):
-                    topic_id = topic_id_raw
-                else:
-                    try:
-                        topic_id = int(str(topic_id_raw))
-                    except Exception:
-                        topic_id = None
-                kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('📚 Мои темы', callback_data='my_topics')]]
-                if topic_id:
-                    kb.insert(0, [InlineKeyboardButton('🔍 Открыть тему', callback_data=f'topic_{topic_id}')])
-                elif endpoint == '/add-topic':
-                    kb.insert(0, [InlineKeyboardButton('📚 К темам', callback_data='list_topics')])
-                msg = 'Такая тема у вас уже есть.' if duplicate else 'Тема добавлена.'
-                await update.message.reply_text(self._fix_text(msg), reply_markup=self._mk(kb))
             else:
-                await update.message.reply_text(self._fix_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.'))
-        elif awaiting == 'add_role_name':
+                await update.message.reply_text(
+                    self._fix_text('Не удалось добавить научного руководителя. Попробуйте ещё раз или используйте веб-админку.')
+                )
+            return
+
+        if awaiting == 'add_topic_title':
             if not text:
-                await update.message.reply_text(self._fix_text('Название роли не может быть пустым. Введите название или /start для отмены.'))
+                await update.message.reply_text(
+                    self._fix_text('Название темы не может быть пустым. Введите название или /start для отмены.')
+                )
+                return
+            payload: Dict[str, Any] = context.user_data.get('add_topic_payload') or {}
+            payload['title'] = text
+            role = context.user_data.get('topic_role') or 'student'
+            payload['seeking_role'] = role
+            uid = context.user_data.get('uid')
+            if uid is not None:
+                payload['author_user_id'] = str(uid)
+                context.user_data['add_topic_endpoint'] = '/api/add-topic'
+            else:
+                context.user_data['add_topic_endpoint'] = '/add-topic'
+                payload['author_full_name'] = getattr(update.effective_user, 'full_name', None) or 'Неизвестный автор'
+            context.user_data['add_topic_payload'] = payload
+            context.user_data['awaiting'] = 'add_topic_description'
+            await update.message.reply_text(
+                self._fix_text('Введите описание темы (или "-" чтобы пропустить).')
+            )
+            return
+
+        if awaiting == 'add_topic_description':
+            payload = context.user_data.get('add_topic_payload') or {}
+            payload['description'] = '' if self._should_skip_optional(text) else text
+            context.user_data['add_topic_payload'] = payload
+            context.user_data['awaiting'] = 'add_topic_expected'
+            await update.message.reply_text(
+                self._fix_text('Укажите ожидаемые результаты (или "-" чтобы пропустить).')
+            )
+            return
+
+        if awaiting == 'add_topic_expected':
+            payload = context.user_data.get('add_topic_payload') or {}
+            payload['expected_outcomes'] = '' if self._should_skip_optional(text) else text
+            context.user_data['add_topic_payload'] = payload
+            context.user_data['awaiting'] = 'add_topic_skills'
+            await update.message.reply_text(
+                self._fix_text('Перечислите требуемые навыки (или "-" чтобы пропустить).')
+            )
+            return
+
+        if awaiting == 'add_topic_skills':
+            payload = context.user_data.get('add_topic_payload') or {}
+            payload['required_skills'] = '' if self._should_skip_optional(text) else text
+            context.user_data['add_topic_payload'] = payload
+            context.user_data['awaiting'] = 'add_topic_direction'
+            await update.message.reply_text(
+                self._fix_text('Укажите направление (цифрой, например 9, или "-" чтобы пропустить).')
+            )
+            return
+
+        if awaiting == 'add_topic_direction':
+            payload = context.user_data.get('add_topic_payload') or {}
+            if self._should_skip_optional(text):
+                payload['direction'] = ''
+            else:
+                if not text.isdigit():
+                    await update.message.reply_text(
+                        self._fix_text('Направление должно быть числом. Введите номер или "-".')
+                    )
+                    return
+                payload['direction'] = text
+            context.user_data['add_topic_payload'] = payload
+            await self._finish_add_topic(update, context)
+            return
+
+        if awaiting == 'add_role_name':
+            if not text:
+                await update.message.reply_text(
+                    self._fix_text('Название роли не может быть пустым. Введите название или /start для отмены.')
+                )
                 return
             payload = context.user_data.get('add_role_payload') or {}
             payload['name'] = text
             context.user_data['add_role_payload'] = payload
             context.user_data['awaiting'] = 'add_role_description'
             await update.message.reply_text(self._fix_text('Введите описание роли (или "-" чтобы пропустить).'))
-        elif awaiting == 'add_role_description':
+            return
+
+        if awaiting == 'add_role_description':
             payload = context.user_data.get('add_role_payload') or {}
-            if self._should_skip_optional(text):
-                payload['description'] = None
-            else:
-                payload['description'] = text
+            payload['description'] = None if self._should_skip_optional(text) else text
             context.user_data['add_role_payload'] = payload
             context.user_data['awaiting'] = 'add_role_skills'
             await update.message.reply_text(self._fix_text('Укажите требуемые навыки (или "-" чтобы пропустить).'))
-        elif awaiting == 'add_role_skills':
+            return
+
+        if awaiting == 'add_role_skills':
             payload = context.user_data.get('add_role_payload') or {}
-            if self._should_skip_optional(text):
-                payload['required_skills'] = None
-            else:
-                payload['required_skills'] = text
+            payload['required_skills'] = None if self._should_skip_optional(text) else text
             context.user_data['add_role_payload'] = payload
             context.user_data['awaiting'] = 'add_role_capacity'
-            await update.message.reply_text(self._fix_text('Укажите вместимость роли числом (или "-" чтобы пропустить).'))
-        elif awaiting == 'add_role_capacity':
+            await update.message.reply_text(
+                self._fix_text('Укажите вместимость роли числом (или "-" чтобы пропустить).')
+            )
+            return
+
+        if awaiting == 'add_role_capacity':
             payload = context.user_data.get('add_role_payload') or {}
-            capacity_val: Optional[int]
             if self._should_skip_optional(text):
-                capacity_val = None
+                capacity_val: Optional[int] = None
             else:
                 try:
                     capacity_val = int(text)
                     if capacity_val < 0:
                         raise ValueError('negative capacity')
                 except Exception:
-                    await update.message.reply_text(self._fix_text('Вместимость должна быть числом. Введите число или "-" чтобы пропустить.'))
+                    await update.message.reply_text(
+                        self._fix_text('Вместимость должна быть числом. Введите число или "-" чтобы пропустить.')
+                    )
                     return
             payload['capacity'] = capacity_val
             context.user_data['add_role_payload'] = payload
@@ -921,7 +1184,9 @@ class MentorMatchBot:
                 context.user_data.pop('add_role_payload', None)
                 context.user_data.pop('add_role_topic_id', None)
                 context.user_data.pop('add_role_topic_title', None)
-                await update.message.reply_text(self._fix_text('Не удалось определить тему для роли. Начните заново /start.'))
+                await update.message.reply_text(
+                    self._fix_text('Не удалось определить тему для роли. Начните заново /start.')
+                )
                 return
             data = {
                 'topic_id': str(topic_id),
@@ -939,13 +1204,501 @@ class MentorMatchBot:
             context.user_data.pop('add_role_topic_id', None)
             context.user_data.pop('add_role_topic_title', None)
             if not res or res.get('status') not in ('ok', 'success'):
-                await update.message.reply_text(self._fix_text('Не удалось добавить роль. Попробуйте позже или используйте веб-админку.'))
+                await update.message.reply_text(
+                    self._fix_text('Не удалось добавить роль. Попробуйте позже или используйте веб-админку.')
+                )
                 return
             kb = [[InlineKeyboardButton('📚 К теме', callback_data=f'topic_{topic_id}')]]
             role_name = payload.get('name')
             topic_str = topic_title or f'#{topic_id}'
             msg = f'Роль "{role_name}" добавлена к теме «{topic_str}».'
             await update.message.reply_text(self._fix_text(msg), reply_markup=self._mk(kb))
+            return
+
+        if awaiting == 'edit_student_program':
+            payload = context.user_data.get('edit_student_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['program'] = value
+            context.user_data['edit_student_payload'] = payload
+            context.user_data['awaiting'] = 'edit_student_skills'
+            original = context.user_data.get('edit_student_original') or {}
+            prompt = (
+                f"Навыки (сейчас: {original.get('skills') or '–'}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_student_skills':
+            payload = context.user_data.get('edit_student_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['skills'] = value
+            context.user_data['edit_student_payload'] = payload
+            context.user_data['awaiting'] = 'edit_student_interests'
+            original = context.user_data.get('edit_student_original') or {}
+            prompt = (
+                f"Интересы (сейчас: {original.get('interests') or '–'}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_student_interests':
+            payload = context.user_data.get('edit_student_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['interests'] = value
+            context.user_data['edit_student_payload'] = payload
+            context.user_data['awaiting'] = 'edit_student_cv'
+            original = context.user_data.get('edit_student_original') or {}
+            prompt = (
+                f"Ссылка на CV (сейчас: {(original.get('cv') or '–')[:200]}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_student_cv':
+            payload = context.user_data.get('edit_student_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['cv'] = value
+            context.user_data['edit_student_payload'] = payload
+            await self._finish_edit_student(update, context)
+            return
+
+        if awaiting == 'edit_supervisor_position':
+            payload = context.user_data.get('edit_supervisor_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['position'] = value
+            context.user_data['edit_supervisor_payload'] = payload
+            context.user_data['awaiting'] = 'edit_supervisor_degree'
+            original = context.user_data.get('edit_supervisor_original') or {}
+            prompt = (
+                f"Учёная степень (сейчас: {original.get('degree') or '–'}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_supervisor_degree':
+            payload = context.user_data.get('edit_supervisor_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['degree'] = value
+            context.user_data['edit_supervisor_payload'] = payload
+            context.user_data['awaiting'] = 'edit_supervisor_capacity'
+            original = context.user_data.get('edit_supervisor_original') or {}
+            prompt = (
+                f"Лимит студентов (сейчас: {original.get('capacity') or '–'}).\n"
+                "Напишите число, «пропустить» или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_supervisor_capacity':
+            payload = context.user_data.get('edit_supervisor_payload') or {}
+            value = self._normalize_edit_input(text)
+            if value not in (self.EDIT_KEEP, None):
+                try:
+                    int(str(value))
+                except Exception:
+                    await update.message.reply_text(
+                        self._fix_text('Вместимость должна быть числом. Введите число, «пропустить» или «-».')
+                    )
+                    return
+            payload['capacity'] = value
+            context.user_data['edit_supervisor_payload'] = payload
+            context.user_data['awaiting'] = 'edit_supervisor_interests'
+            original = context.user_data.get('edit_supervisor_original') or {}
+            prompt = (
+                f"Интересы (сейчас: {original.get('interests') or '–'}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_supervisor_interests':
+            payload = context.user_data.get('edit_supervisor_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['interests'] = value
+            context.user_data['edit_supervisor_payload'] = payload
+            context.user_data['awaiting'] = 'edit_supervisor_requirements'
+            original = context.user_data.get('edit_supervisor_original') or {}
+            prompt = (
+                f"Требования (сейчас: {original.get('requirements') or '–'}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_supervisor_requirements':
+            payload = context.user_data.get('edit_supervisor_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['requirements'] = value
+            context.user_data['edit_supervisor_payload'] = payload
+            await self._finish_edit_supervisor(update, context)
+            return
+
+        if awaiting == 'edit_topic_title':
+            payload = context.user_data.get('edit_topic_payload') or {}
+            value = self._normalize_edit_input(text)
+            if value is None:
+                await update.message.reply_text(
+                    self._fix_text('Название темы не может быть пустым. Введите текст или «пропустить».')
+                )
+                return
+            payload['title'] = value
+            context.user_data['edit_topic_payload'] = payload
+            context.user_data['awaiting'] = 'edit_topic_description'
+            original = context.user_data.get('edit_topic_original') or {}
+            prompt = (
+                f"Описание (сейчас: {(original.get('description') or '–')[:300]}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_topic_description':
+            payload = context.user_data.get('edit_topic_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['description'] = value
+            context.user_data['edit_topic_payload'] = payload
+            context.user_data['awaiting'] = 'edit_topic_expected'
+            original = context.user_data.get('edit_topic_original') or {}
+            prompt = (
+                f"Ожидаемые результаты (сейчас: {(original.get('expected_outcomes') or '–')[:300]}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_topic_expected':
+            payload = context.user_data.get('edit_topic_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['expected_outcomes'] = value
+            context.user_data['edit_topic_payload'] = payload
+            context.user_data['awaiting'] = 'edit_topic_skills'
+            original = context.user_data.get('edit_topic_original') or {}
+            prompt = (
+                f"Требуемые навыки (сейчас: {original.get('required_skills') or '–'}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_topic_skills':
+            payload = context.user_data.get('edit_topic_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['required_skills'] = value
+            context.user_data['edit_topic_payload'] = payload
+            context.user_data['awaiting'] = 'edit_topic_direction'
+            original = context.user_data.get('edit_topic_original') or {}
+            prompt = (
+                f"Направление (сейчас: {original.get('direction') or '–'}).\n"
+                "Введите число, «пропустить» или «-»/«очистить», чтобы удалить значение."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_topic_direction':
+            payload = context.user_data.get('edit_topic_payload') or {}
+            value = self._normalize_edit_input(text)
+            if value not in (self.EDIT_KEEP, None):
+                if not str(value).isdigit():
+                    await update.message.reply_text(
+                        self._fix_text('Направление должно быть числом. Введите номер, «пропустить» или «-».')
+                    )
+                    return
+            payload['direction'] = value
+            context.user_data['edit_topic_payload'] = payload
+            context.user_data['awaiting'] = 'edit_topic_seeking_role'
+            original = context.user_data.get('edit_topic_original') or {}
+            prompt = (
+                f"Кого ищет тема (сейчас: {original.get('seeking_role') or 'student'}).\n"
+                "Введите student/supervisor или напишите «пропустить», чтобы оставить без изменений."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_topic_seeking_role':
+            payload = context.user_data.get('edit_topic_payload') or {}
+            lowered = text.strip().lower()
+            if not lowered or lowered in {'пропустить', 'skip', 'оставить', 'не менять'}:
+                payload['seeking_role'] = self.EDIT_KEEP
+            else:
+                role_val = self._normalize_role_value(text)
+                if not role_val:
+                    await update.message.reply_text(
+                        self._fix_text('Укажите «student» или «supervisor», либо напишите «пропустить».')
+                    )
+                    return
+                payload['seeking_role'] = role_val
+            context.user_data['edit_topic_payload'] = payload
+            await self._finish_edit_topic(update, context)
+            return
+
+        if awaiting == 'edit_role_name':
+            payload = context.user_data.get('edit_role_payload') or {}
+            value = self._normalize_edit_input(text)
+            if value is None:
+                await update.message.reply_text(
+                    self._fix_text('Название роли не может быть пустым. Введите текст или «пропустить».')
+                )
+                return
+            payload['name'] = value
+            context.user_data['edit_role_payload'] = payload
+            context.user_data['awaiting'] = 'edit_role_description'
+            original = context.user_data.get('edit_role_original') or {}
+            prompt = (
+                f"Описание (сейчас: {(original.get('description') or '–')[:300]}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_role_description':
+            payload = context.user_data.get('edit_role_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['description'] = value
+            context.user_data['edit_role_payload'] = payload
+            context.user_data['awaiting'] = 'edit_role_required'
+            original = context.user_data.get('edit_role_original') or {}
+            prompt = (
+                f"Требуемые навыки (сейчас: {original.get('required_skills') or '–'}).\n"
+                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_role_required':
+            payload = context.user_data.get('edit_role_payload') or {}
+            value = self._normalize_edit_input(text)
+            payload['required_skills'] = value
+            context.user_data['edit_role_payload'] = payload
+            context.user_data['awaiting'] = 'edit_role_capacity'
+            original = context.user_data.get('edit_role_original') or {}
+            prompt = (
+                f"Вместимость (сейчас: {original.get('capacity') or '–'}).\n"
+                "Введите число, «пропустить» или «-»/«очистить», чтобы удалить."
+            )
+            await update.message.reply_text(self._fix_text(prompt))
+            return
+
+        if awaiting == 'edit_role_capacity':
+            payload = context.user_data.get('edit_role_payload') or {}
+            value = self._normalize_edit_input(text)
+            if value not in (self.EDIT_KEEP, None):
+                try:
+                    int(str(value))
+                except Exception:
+                    await update.message.reply_text(
+                        self._fix_text('Вместимость должна быть числом. Введите число, «пропустить» или «-».')
+                    )
+                    return
+            payload['capacity'] = value
+            context.user_data['edit_role_payload'] = payload
+            await self._finish_edit_role(update, context)
+            return
+
+        context.user_data['awaiting'] = None
+        await update.message.reply_text(self._fix_text('Действие отменено. Начните заново /start.'))
+
+    async def _finish_add_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        payload: Dict[str, Any] = context.user_data.get('add_topic_payload') or {}
+        endpoint = context.user_data.get('add_topic_endpoint') or '/api/add-topic'
+        data: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if value is None:
+                continue
+            if isinstance(value, int):
+                data[key] = str(value)
+            else:
+                data[key] = value
+        res = await self._api_post(endpoint, data=data)
+        context.user_data['awaiting'] = None
+        context.user_data.pop('topic_role', None)
+        context.user_data.pop('add_topic_payload', None)
+        context.user_data.pop('add_topic_endpoint', None)
+        if not res:
+            await update.message.reply_text(
+                self._fix_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.')
+            )
+            return
+        status = (res.get('status') or '').lower()
+        if status in {'ok', 'success'}:
+            duplicate = (res.get('message') == 'duplicate')
+            topic_id_raw = res.get('topic_id')
+            topic_id: Optional[int]
+            if isinstance(topic_id_raw, int):
+                topic_id = topic_id_raw
+            else:
+                try:
+                    topic_id = int(str(topic_id_raw))
+                except Exception:
+                    topic_id = None
+            kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('📚 Мои темы', callback_data='my_topics')]]
+            if topic_id:
+                kb.insert(0, [InlineKeyboardButton('🔍 Открыть тему', callback_data=f'topic_{topic_id}')])
+            elif endpoint == '/add-topic':
+                kb.insert(0, [InlineKeyboardButton('📚 К темам', callback_data='list_topics')])
+            msg = 'Такая тема у вас уже есть.' if duplicate else 'Тема добавлена.'
+            await update.message.reply_text(self._fix_text(msg), reply_markup=self._mk(kb))
+        else:
+            await update.message.reply_text(
+                self._fix_text('Не удалось добавить тему. Попробуйте ещё раз или используйте веб-админку.')
+            )
+
+    async def _finish_edit_student(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        payload = context.user_data.get('edit_student_payload') or {}
+        user_id = payload.get('user_id')
+        if user_id is None:
+            context.user_data['awaiting'] = None
+            return
+        data: Dict[str, Any] = {'user_id': str(user_id)}
+        for key in ('program', 'skills', 'interests', 'cv'):
+            value = payload.get(key, self.EDIT_KEEP)
+            if value == self.EDIT_KEEP:
+                continue
+            if value is None:
+                data[key] = ''
+            else:
+                data[key] = value
+        res = await self._api_post('/api/update-student-profile', data=data)
+        context.user_data['awaiting'] = None
+        context.user_data.pop('edit_student_payload', None)
+        context.user_data.pop('edit_student_original', None)
+        if not res or res.get('status') != 'ok':
+            await update.message.reply_text(self._fix_text('Не удалось обновить профиль студента. Попробуйте позже.'))
+            return
+        kb = [[InlineKeyboardButton('👤 К профилю', callback_data=f'student_{user_id}')]]
+        await update.message.reply_text(
+            self._fix_text('Профиль студента обновлён.'), reply_markup=self._mk(kb)
+        )
+
+    async def _finish_edit_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        payload = context.user_data.get('edit_supervisor_payload') or {}
+        user_id = payload.get('user_id')
+        if user_id is None:
+            context.user_data['awaiting'] = None
+            return
+        data: Dict[str, Any] = {'user_id': str(user_id)}
+        for key in ('position', 'degree', 'interests', 'requirements'):
+            value = payload.get(key, self.EDIT_KEEP)
+            if value == self.EDIT_KEEP:
+                continue
+            if value is None:
+                data[key] = ''
+            else:
+                data[key] = value
+        capacity_value = payload.get('capacity', self.EDIT_KEEP)
+        if capacity_value != self.EDIT_KEEP:
+            if capacity_value is None:
+                data['capacity'] = ''
+            else:
+                data['capacity'] = str(capacity_value)
+        res = await self._api_post('/api/update-supervisor-profile', data=data)
+        context.user_data['awaiting'] = None
+        context.user_data.pop('edit_supervisor_payload', None)
+        context.user_data.pop('edit_supervisor_original', None)
+        if not res or res.get('status') != 'ok':
+            await update.message.reply_text(self._fix_text('Не удалось обновить профиль руководителя. Попробуйте позже.'))
+            return
+        kb = [[InlineKeyboardButton('👤 К профилю', callback_data=f'supervisor_{user_id}')]]
+        await update.message.reply_text(
+            self._fix_text('Профиль руководителя обновлён.'), reply_markup=self._mk(kb)
+        )
+
+    async def _finish_edit_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        payload = context.user_data.get('edit_topic_payload') or {}
+        original = context.user_data.get('edit_topic_original') or {}
+        topic_id = payload.get('topic_id')
+        if topic_id is None:
+            context.user_data['awaiting'] = None
+            return
+        data: Dict[str, Any] = {'topic_id': str(topic_id)}
+        editor = payload.get('editor_user_id')
+        if editor:
+            data['editor_user_id'] = str(editor)
+        title_value = payload.get('title', self.EDIT_KEEP)
+        if title_value == self.EDIT_KEEP:
+            data['title'] = original.get('title') or ''
+        elif title_value is None:
+            await update.message.reply_text(self._fix_text('Название темы не может быть пустым.'))
+            return
+        else:
+            data['title'] = title_value
+        if not data['title']:
+            await update.message.reply_text(self._fix_text('Название темы не может быть пустым.'))
+            return
+        for key in ('description', 'expected_outcomes', 'required_skills'):
+            value = payload.get(key, self.EDIT_KEEP)
+            if value == self.EDIT_KEEP:
+                continue
+            if value is None:
+                data[key] = ''
+            else:
+                data[key] = value
+        direction_value = payload.get('direction', self.EDIT_KEEP)
+        if direction_value != self.EDIT_KEEP:
+            data['direction'] = '' if direction_value is None else str(direction_value)
+        role_value = payload.get('seeking_role', self.EDIT_KEEP)
+        if role_value != self.EDIT_KEEP and role_value:
+            data['seeking_role'] = role_value
+        res = await self._api_post('/api/update-topic', data=data)
+        context.user_data['awaiting'] = None
+        context.user_data.pop('edit_topic_payload', None)
+        context.user_data.pop('edit_topic_original', None)
+        if not res or res.get('status') != 'ok':
+            await update.message.reply_text(self._fix_text('Не удалось обновить тему. Попробуйте позже.'))
+            return
+        kb = [[InlineKeyboardButton('📚 К теме', callback_data=f'topic_{topic_id}')]]
+        await update.message.reply_text(self._fix_text('Тема обновлена.'), reply_markup=self._mk(kb))
+
+    async def _finish_edit_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        payload = context.user_data.get('edit_role_payload') or {}
+        original = context.user_data.get('edit_role_original') or {}
+        role_id = payload.get('role_id')
+        if role_id is None:
+            context.user_data['awaiting'] = None
+            return
+        data: Dict[str, Any] = {'role_id': str(role_id)}
+        editor = payload.get('editor_user_id')
+        if editor:
+            data['editor_user_id'] = str(editor)
+        name_value = payload.get('name', self.EDIT_KEEP)
+        if name_value == self.EDIT_KEEP:
+            data['name'] = original.get('name') or ''
+        elif name_value is None:
+            await update.message.reply_text(self._fix_text('Название роли не может быть пустым.'))
+            return
+        else:
+            data['name'] = name_value
+        if not data['name']:
+            await update.message.reply_text(self._fix_text('Название роли не может быть пустым.'))
+            return
+        for key in ('description', 'required_skills'):
+            value = payload.get(key, self.EDIT_KEEP)
+            if value == self.EDIT_KEEP:
+                continue
+            if value is None:
+                data[key] = ''
+            else:
+                data[key] = value
+        capacity_value = payload.get('capacity', self.EDIT_KEEP)
+        if capacity_value != self.EDIT_KEEP:
+            data['capacity'] = '' if capacity_value is None else str(capacity_value)
+        res = await self._api_post('/api/update-role', data=data)
+        context.user_data['awaiting'] = None
+        context.user_data.pop('edit_role_payload', None)
+        context.user_data.pop('edit_role_original', None)
+        if not res or res.get('status') != 'ok':
+            await update.message.reply_text(self._fix_text('Не удалось обновить роль. Попробуйте позже.'))
+            return
+        topic_id = original.get('topic_id')
+        kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('🎭 К роли', callback_data=f'role_{role_id}')]]
+        if topic_id:
+            kb.append([InlineKeyboardButton('📚 К теме', callback_data=f'topic_{topic_id}')])
+        await update.message.reply_text(
+            self._fix_text('Роль обновлена.'), reply_markup=self._mk(kb)
+        )
 
     async def cb_match_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await q.answer()

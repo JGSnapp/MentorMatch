@@ -9,6 +9,7 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 from media_store import persist_media_from_url, MEDIA_ROOT
+from utils import parse_optional_int, normalize_optional_str
 
 from parse_gform import fetch_normalized_rows, fetch_supervisor_rows
 from matching import handle_match, handle_match_student, handle_match_supervisor_user
@@ -570,8 +571,9 @@ def api_whoami(tg_id: Optional[int] = Query(None), username: Optional[str] = Que
 
 
 @app.post('/api/bind-telegram', response_class=JSONResponse)
-def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[int] = Form(None), username: Optional[str] = Form(None)):
+def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[str] = Form(None), username: Optional[str] = Form(None)):
     link = _normalize_telegram_link(username) if username else None
+    tg_id_val = parse_optional_int(tg_id)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -582,7 +584,7 @@ def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[int] = Form(None
                 updated_at=now()
             WHERE id=%s
             """,
-            ((int(tg_id) if tg_id else None), link, user_id),
+            (tg_id_val, link, user_id),
         )
         conn.commit()
     # Best-effort export after status change (especially on accept)
@@ -599,11 +601,19 @@ def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[int] = Form(None
 
 
 @app.post('/api/self-register', response_class=JSONResponse)
-def api_self_register(role: str = Form(...), full_name: Optional[str] = Form(None), username: Optional[str] = Form(None), tg_id: Optional[int] = Form(None), email: Optional[str] = Form(None)):
+def api_self_register(
+    role: str = Form(...),
+    full_name: Optional[str] = Form(None),
+    username: Optional[str] = Form(None),
+    tg_id: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+):
     r = (role or '').strip().lower()
     if r not in ('student', 'supervisor'):
         return {'status': 'error', 'message': 'role must be student or supervisor'}
     link = _normalize_telegram_link(username) if username else None
+    tg_id_val = parse_optional_int(tg_id)
+    tg_id_for_name = _extract_tg_username(username) or (str(tg_id).strip() if tg_id else '')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             '''
@@ -611,10 +621,10 @@ def api_self_register(role: str = Form(...), full_name: Optional[str] = Form(Non
             VALUES (%s, %s, %s, %s, %s, TRUE, now(), now())
             RETURNING id
             ''', (
-                (full_name or f'Telegram user {(_extract_tg_username(username) or tg_id or "")}').strip(),
+                (full_name or f'Telegram user {tg_id_for_name}').strip(),
                 (email or None),
                 link,
-                (int(tg_id) if tg_id else None),
+                tg_id_val,
                 r,
             ),
         )
@@ -638,23 +648,85 @@ def api_update_student_profile(
     achievements: Optional[str] = Form(None),
     workplace: Optional[str] = Form(None),
 ):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
-        exists = cur.fetchone() is not None
-        if exists:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT program, skills, interests, cv, skills_to_learn, achievements, workplace
+            FROM student_profiles
+            WHERE user_id=%s
+            ''',
+            (user_id,),
+        )
+        existing = cur.fetchone()
+        program_val = (
+            normalize_optional_str(program)
+            if program is not None
+            else (existing.get('program') if existing else None)
+        )
+        skills_val = (
+            normalize_optional_str(skills)
+            if skills is not None
+            else (existing.get('skills') if existing else None)
+        )
+        interests_val = (
+            normalize_optional_str(interests)
+            if interests is not None
+            else (existing.get('interests') if existing else None)
+        )
+        if cv is None:
+            cv_val = existing.get('cv') if existing else None
+        else:
+            cv_val = _process_cv(conn, user_id, normalize_optional_str(cv))
+        skills_to_learn_val = (
+            normalize_optional_str(skills_to_learn)
+            if skills_to_learn is not None
+            else (existing.get('skills_to_learn') if existing else None)
+        )
+        achievements_val = (
+            normalize_optional_str(achievements)
+            if achievements is not None
+            else (existing.get('achievements') if existing else None)
+        )
+        workplace_val = (
+            normalize_optional_str(workplace)
+            if workplace is not None
+            else (existing.get('workplace') if existing else None)
+        )
+
+        if existing:
             cur.execute(
                 '''
                 UPDATE student_profiles
                 SET program=%s, skills=%s, interests=%s, cv=%s, skills_to_learn=%s, achievements=%s, workplace=%s
                 WHERE user_id=%s
-                ''', (program, skills, interests, cv, skills_to_learn, achievements, workplace, user_id),
+                ''',
+                (
+                    program_val,
+                    skills_val,
+                    interests_val,
+                    cv_val,
+                    skills_to_learn_val,
+                    achievements_val,
+                    workplace_val,
+                    user_id,
+                ),
             )
         else:
             cur.execute(
                 '''
                 INSERT INTO student_profiles(user_id, program, skills, interests, cv, skills_to_learn, achievements, workplace)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ''', (user_id, program, skills, interests, cv, skills_to_learn, achievements, workplace),
+                ''',
+                (
+                    user_id,
+                    program_val,
+                    skills_val,
+                    interests_val,
+                    cv_val,
+                    skills_to_learn_val,
+                    achievements_val,
+                    workplace_val,
+                ),
             )
         conn.commit()
     return {'status': 'ok'}
@@ -665,36 +737,98 @@ def api_update_supervisor_profile(
     user_id: int = Form(...),
     position: Optional[str] = Form(None),
     degree: Optional[str] = Form(None),
-    capacity: Optional[int] = Form(None),
+    capacity: Optional[str] = Form(None),
     interests: Optional[str] = Form(None),
     requirements: Optional[str] = Form(None),
 ):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute('SELECT 1 FROM supervisor_profiles WHERE user_id=%s', (user_id,))
-        exists = cur.fetchone() is not None
-        if exists:
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        capacity_val = parse_optional_int(capacity)
+        cur.execute(
+            'SELECT position, degree, capacity, interests, requirements FROM supervisor_profiles WHERE user_id=%s',
+            (user_id,),
+        )
+        existing = cur.fetchone()
+        position_val = (
+            normalize_optional_str(position)
+            if position is not None
+            else (existing.get('position') if existing else None)
+        )
+        degree_val = (
+            normalize_optional_str(degree)
+            if degree is not None
+            else (existing.get('degree') if existing else None)
+        )
+        interests_val = (
+            normalize_optional_str(interests)
+            if interests is not None
+            else (existing.get('interests') if existing else None)
+        )
+        requirements_val = (
+            normalize_optional_str(requirements)
+            if requirements is not None
+            else (existing.get('requirements') if existing else None)
+        )
+
+        if existing:
             cur.execute(
                 '''
                 UPDATE supervisor_profiles
                 SET position=%s, degree=%s, capacity=%s, interests=%s, requirements=%s
                 WHERE user_id=%s
-                ''', (position, degree, (capacity if capacity is not None else None), interests, requirements, user_id),
+                ''',
+                (
+                    position_val,
+                    degree_val,
+                    capacity_val,
+                    interests_val,
+                    requirements_val,
+                    user_id,
+                ),
             )
         else:
             cur.execute(
                 '''
                 INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
                 VALUES (%s, %s, %s, %s, %s, %s)
-                ''', (user_id, position, degree, (capacity if capacity is not None else None), interests, requirements),
+                ''',
+                (
+                    user_id,
+                    position_val,
+                    degree_val,
+                    capacity_val,
+                    interests_val,
+                    requirements_val,
+                ),
             )
         conn.commit()
     return {'status': 'ok'}
 
 
 @app.post('/api/add-topic', response_class=JSONResponse)
-def api_add_topic(author_user_id: int = Form(...), title: str = Form(...), description: Optional[str] = Form(None), expected_outcomes: Optional[str] = Form(None), required_skills: Optional[str] = Form(None), seeking_role: str = Form('student'), direction: Optional[int] = Form(None)):
+def api_add_topic(
+    author_user_id: str = Form(...),
+    title: str = Form(...),
+    description: Optional[str] = Form(None),
+    expected_outcomes: Optional[str] = Form(None),
+    required_skills: Optional[str] = Form(None),
+    seeking_role: str = Form('student'),
+    direction: Optional[str] = Form(None),
+):
+    author_id_val = parse_optional_int(author_user_id)
+    if author_id_val is None:
+        raise HTTPException(status_code=400, detail='author_user_id must be an integer')
+    title_clean = (title or '').strip()
+    if not title_clean:
+        raise HTTPException(status_code=400, detail='title is required')
+    description_val = normalize_optional_str(description)
+    expected_val = normalize_optional_str(expected_outcomes)
+    required_val = normalize_optional_str(required_skills)
+    direction_val = parse_optional_int(direction)
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute('SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)', (author_user_id, title.strip(), (direction if direction is not None else None)))
+        cur.execute(
+            'SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)',
+            (author_id_val, title_clean, direction_val),
+        )
         if cur.fetchone():
             return {'status': 'ok', 'message': 'duplicate'}
         cur.execute(
@@ -702,7 +836,7 @@ def api_add_topic(author_user_id: int = Form(...), title: str = Form(...), descr
             INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills, direction, seeking_role, is_active, created_at, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, now(), now())
             RETURNING id
-            ''', (author_user_id, title.strip(), (description or None), (expected_outcomes or None), (required_skills or None), (direction if direction is not None else None), seeking_role),
+            ''', (author_id_val, title_clean, description_val, expected_val, required_val, direction_val, seeking_role),
         )
         tid = cur.fetchone()[0]
         conn.commit()
@@ -710,14 +844,26 @@ def api_add_topic(author_user_id: int = Form(...), title: str = Form(...), descr
 
 
 @app.post('/api/add-role', response_class=JSONResponse)
-def api_add_role(topic_id: int = Form(...), name: str = Form(...), description: Optional[str] = Form(None), required_skills: Optional[str] = Form(None), capacity: Optional[int] = Form(None)):
+def api_add_role(
+    topic_id: int = Form(...),
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    required_skills: Optional[str] = Form(None),
+    capacity: Optional[str] = Form(None),
+):
     with get_conn() as conn, conn.cursor() as cur:
+        capacity_val = parse_optional_int(capacity)
+        name_clean = (name or '').strip()
+        if not name_clean:
+            raise HTTPException(status_code=400, detail='name is required')
+        description_val = normalize_optional_str(description)
+        required_val = normalize_optional_str(required_skills)
         cur.execute(
             '''
             INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
             VALUES (%s, %s, %s, %s, %s, now(), now())
             RETURNING id
-            ''', (topic_id, name.strip(), (description or None), (required_skills or None), (capacity if capacity is not None else None)),
+            ''', (topic_id, name_clean, description_val, required_val, capacity_val),
         )
         rid = cur.fetchone()[0]
         conn.commit()
@@ -731,6 +877,156 @@ def api_add_role(topic_id: int = Form(...), name: str = Form(...), description: 
     except Exception as _e:
         pass
     return {'status': 'ok', 'role_id': rid}
+
+
+@app.post('/api/update-topic', response_class=JSONResponse)
+def api_update_topic(
+    topic_id: int = Form(...),
+    editor_user_id: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    expected_outcomes: Optional[str] = Form(None),
+    required_skills: Optional[str] = Form(None),
+    direction: Optional[str] = Form(None),
+    seeking_role: Optional[str] = Form(None),
+    is_active: Optional[str] = Form(None),
+):
+    editor_id = parse_optional_int(editor_user_id)
+    direction_val = parse_optional_int(direction)
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT author_user_id, title, description, expected_outcomes, required_skills,
+                   direction, seeking_role, is_active
+            FROM topics
+            WHERE id=%s
+            ''',
+            (topic_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {'status': 'error', 'message': 'not_found'}
+        author_id = row['author_user_id']
+        if editor_id is not None and author_id is not None and author_id != editor_id:
+            return {'status': 'error', 'message': 'forbidden'}
+
+        title_val = normalize_optional_str(title) if title is not None else row['title']
+        if not title_val:
+            return {'status': 'error', 'message': 'title_required'}
+        description_val = (
+            normalize_optional_str(description)
+            if description is not None
+            else row['description']
+        )
+        expected_val = (
+            normalize_optional_str(expected_outcomes)
+            if expected_outcomes is not None
+            else row['expected_outcomes']
+        )
+        required_val = (
+            normalize_optional_str(required_skills)
+            if required_skills is not None
+            else row['required_skills']
+        )
+        direction_value = direction_val if direction is not None else row['direction']
+
+        if seeking_role is None:
+            seeking_role_val = row['seeking_role']
+        else:
+            sr = (seeking_role or '').strip().lower()
+            if sr in {'student', 'студент'}:
+                seeking_role_val = 'student'
+            elif sr in {'supervisor', 'руководитель', 'научный руководитель'}:
+                seeking_role_val = 'supervisor'
+            else:
+                return {'status': 'error', 'message': 'invalid_seeking_role'}
+
+        if is_active is None:
+            active_val = row['is_active']
+        else:
+            active_val = _truthy(is_active)
+
+        cur.execute(
+            '''
+            UPDATE topics
+            SET title=%s, description=%s, expected_outcomes=%s, required_skills=%s,
+                direction=%s, seeking_role=%s, is_active=%s, updated_at=now()
+            WHERE id=%s
+            ''',
+            (
+                title_val,
+                description_val,
+                expected_val,
+                required_val,
+                direction_value,
+                seeking_role_val,
+                active_val,
+                topic_id,
+            ),
+        )
+        conn.commit()
+    return {'status': 'ok', 'topic_id': topic_id}
+
+
+@app.post('/api/update-role', response_class=JSONResponse)
+def api_update_role(
+    role_id: int = Form(...),
+    editor_user_id: Optional[str] = Form(None),
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    required_skills: Optional[str] = Form(None),
+    capacity: Optional[str] = Form(None),
+):
+    editor_id = parse_optional_int(editor_user_id)
+    capacity_val = parse_optional_int(capacity)
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT r.topic_id, r.name, r.description, r.required_skills, r.capacity, t.author_user_id
+            FROM roles r
+            JOIN topics t ON t.id = r.topic_id
+            WHERE r.id=%s
+            ''',
+            (role_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {'status': 'error', 'message': 'not_found'}
+        author_id = row['author_user_id']
+        if editor_id is not None and author_id is not None and author_id != editor_id:
+            return {'status': 'error', 'message': 'forbidden'}
+
+        name_val = normalize_optional_str(name) if name is not None else row['name']
+        if not name_val:
+            return {'status': 'error', 'message': 'name_required'}
+        description_val = (
+            normalize_optional_str(description)
+            if description is not None
+            else row['description']
+        )
+        required_val = (
+            normalize_optional_str(required_skills)
+            if required_skills is not None
+            else row['required_skills']
+        )
+        capacity_value = capacity_val if capacity is not None else row['capacity']
+
+        cur.execute(
+            '''
+            UPDATE roles
+            SET name=%s, description=%s, required_skills=%s, capacity=%s, updated_at=now()
+            WHERE id=%s
+            ''',
+            (
+                name_val,
+                description_val,
+                required_val,
+                capacity_value,
+                role_id,
+            ),
+        )
+        conn.commit()
+    return {'status': 'ok', 'topic_id': row['topic_id']}
 
 
 @app.post('/api/import-sheet', response_class=JSONResponse)
@@ -1413,13 +1709,14 @@ def api_messages_send(
     receiver_user_id: int = Form(...),
     topic_id: int = Form(...),
     body: str = Form(...),
-    role_id: Optional[int] = Form(None),
+    role_id: Optional[str] = Form(None),
 ):
     msg_id: Optional[int] = None
     with get_conn() as conn, conn.cursor() as cur:
+        role_id_val = parse_optional_int(role_id)
         # Validate role belongs to topic
-        if role_id is not None:
-            cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (int(role_id), int(topic_id)))
+        if role_id_val is not None:
+            cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (role_id_val, int(topic_id)))
             if not cur.fetchone():
                 return {'status': 'error', 'message': 'role does not belong to topic'}
         cur.execute(
@@ -1427,7 +1724,7 @@ def api_messages_send(
             INSERT INTO messages(sender_user_id, receiver_user_id, topic_id, role_id, body, status, created_at)
             VALUES (%s, %s, %s, %s, %s, 'pending', now())
             RETURNING id
-            ''', (sender_user_id, receiver_user_id, topic_id, (int(role_id) if role_id is not None else None), body.strip()),
+            ''', (sender_user_id, receiver_user_id, topic_id, role_id_val, body.strip()),
         )
         msg_id = cur.fetchone()[0]
         conn.commit()
