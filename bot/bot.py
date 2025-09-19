@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.error import TelegramError, TimedOut
 from dotenv import load_dotenv
 
 
@@ -57,6 +58,19 @@ class MentorMatchBot:
                 except Exception:
                     pass
         return InlineKeyboardMarkup(kb)
+
+    async def _answer_callback(self, q, **kwargs) -> None:
+        """Safely acknowledge a callback query without crashing on API timeouts."""
+        if not q:
+            return
+        try:
+            await q.answer(**kwargs)
+        except TimedOut:
+            logger.warning('Timeout while answering callback %s', getattr(q, 'data', None))
+        except TelegramError as e:
+            logger.warning('Failed to answer callback %s: %s', getattr(q, 'data', None), e)
+        except Exception:
+            logger.exception('Unexpected error answering callback %s', getattr(q, 'data', None))
 
     def _should_skip_optional(self, text: Optional[str]) -> bool:
         if text is None:
@@ -149,7 +163,7 @@ class MentorMatchBot:
 
 
     async def cb_view_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         try:
             rid = int(q.data.split('_')[1])
         except Exception:
@@ -196,11 +210,11 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
 
     async def cb_edit_role_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         try:
             rid = int(q.data.split('_')[2])
         except Exception:
-            await q.answer(self._fix_text('Некорректный идентификатор роли.'), show_alert=True)
+            await self._answer_callback(q, text=self._fix_text('Некорректный идентификатор роли.'), show_alert=True)
             return
         role = await self._api_get(f'/api/roles/{rid}')
         if not role:
@@ -211,15 +225,15 @@ class MentorMatchBot:
         is_admin = self._is_admin(update)
         if not is_admin:
             if viewer_id is None or author_id is None:
-                await q.answer(self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
+                await self._answer_callback(q, text=self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
                 return
             try:
                 if int(viewer_id) != int(author_id):
-                    await q.answer(self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
                     return
             except Exception:
                 if viewer_id != author_id:
-                    await q.answer(self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
                     return
         context.user_data['awaiting'] = 'edit_role_name'
         payload: Dict[str, Any] = {'role_id': rid}
@@ -409,7 +423,7 @@ class MentorMatchBot:
 
     # Identity callbacks
     async def cb_confirm_me(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         uid = int(q.data.split('_')[2])
         u = update.effective_user
         payload = {
@@ -428,7 +442,7 @@ class MentorMatchBot:
         await self._show_role_menu(update, context)
 
     async def cb_not_me(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         kb = [
             [InlineKeyboardButton('👨‍🎓 Я студент', callback_data='register_role_student')],
             [InlineKeyboardButton('🧑‍🏫 Я научный руководитель', callback_data='register_role_supervisor')],
@@ -436,7 +450,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('Выберите роль для регистрации:'), reply_markup=self._mk(kb))
 
     async def cb_register_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         role = q.data.split('_')[-1]
         u = update.effective_user
         full_name = getattr(u, 'full_name', None) or getattr(u, 'first_name', '')
@@ -493,7 +507,7 @@ class MentorMatchBot:
         await self.cb_view_supervisor(update, context)
 
     async def cb_my_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         uid = context.user_data.get('uid')
         data = await self._api_get(f'/api/user-topics/{uid}?limit=20') or []
         lines = ['Мои темы:']
@@ -508,7 +522,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_match_topics_for_me(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         uid = context.user_data.get('uid')
         if not uid:
             return await self.cmd_start(update, context)
@@ -517,7 +531,7 @@ class MentorMatchBot:
 
     # Lists
     async def cb_list_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         data = await self._api_get('/api/students?limit=10') or []
         lines: List[str] = ['Студенты:']
         kb: List[List[InlineKeyboardButton]] = []
@@ -528,7 +542,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_list_supervisors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         data = await self._api_get('/api/supervisors?limit=10') or []
         lines: List[str] = ['Научные руководители:']
         kb: List[List[InlineKeyboardButton]] = []
@@ -539,7 +553,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_list_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         data = await self._api_get('/api/topics?limit=10') or []
         lines: List[str] = ['Темы:']
         kb: List[List[InlineKeyboardButton]] = []
@@ -552,7 +566,7 @@ class MentorMatchBot:
 
     # Profiles
     async def cb_view_student(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         # Parse student id from callback data, or fallback to current user
         try:
             sid = int(q.data.split('_')[1])
@@ -604,24 +618,24 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
 
     async def cb_edit_student_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         try:
             sid = int(q.data.split('_')[2])
         except Exception:
-            await q.answer(self._fix_text('Некорректный идентификатор студента.'), show_alert=True)
+            await self._answer_callback(q, text=self._fix_text('Некорректный идентификатор студента.'), show_alert=True)
             return
         viewer_id = context.user_data.get('uid')
         if not self._is_admin(update):
             if viewer_id is None:
-                await q.answer(self._fix_text('Вы не авторизованы для редактирования.'), show_alert=True)
+                await self._answer_callback(q, text=self._fix_text('Вы не авторизованы для редактирования.'), show_alert=True)
                 return
             try:
                 if int(viewer_id) != int(sid):
-                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
                     return
             except Exception:
                 if viewer_id != sid:
-                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
                     return
         student = await self._api_get(f'/api/students/{sid}')
         if not student:
@@ -638,7 +652,7 @@ class MentorMatchBot:
         await q.message.reply_text(self._fix_text(prompt))
 
     async def cb_view_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         # Parse supervisor id from callback data, or fallback to current user
         try:
             uid = int(q.data.split('_')[1])
@@ -682,24 +696,24 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
 
     async def cb_edit_supervisor_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         try:
             uid = int(q.data.split('_')[2])
         except Exception:
-            await q.answer(self._fix_text('Некорректный идентификатор профиля.'), show_alert=True)
+            await self._answer_callback(q, text=self._fix_text('Некорректный идентификатор профиля.'), show_alert=True)
             return
         viewer_id = context.user_data.get('uid')
         if not self._is_admin(update):
             if viewer_id is None:
-                await q.answer(self._fix_text('Вы не авторизованы для редактирования.'), show_alert=True)
+                await self._answer_callback(q, text=self._fix_text('Вы не авторизованы для редактирования.'), show_alert=True)
                 return
             try:
                 if int(viewer_id) != int(uid):
-                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
                     return
             except Exception:
                 if viewer_id != uid:
-                    await q.answer(self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('Можно редактировать только свой профиль.'), show_alert=True)
                     return
         supervisor = await self._api_get(f'/api/supervisors/{uid}')
         if not supervisor:
@@ -716,7 +730,7 @@ class MentorMatchBot:
         await q.message.reply_text(self._fix_text(prompt))
 
     async def cb_view_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         tid = int(q.data.split('_')[1])
         t = await self._api_get(f'/api/topics/{tid}')
         if not t:
@@ -760,11 +774,11 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines2)), reply_markup=self._mk(kb))
 
     async def cb_edit_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         try:
             tid = int(q.data.split('_')[2])
         except Exception:
-            await q.answer(self._fix_text('Некорректный идентификатор темы.'), show_alert=True)
+            await self._answer_callback(q, text=self._fix_text('Некорректный идентификатор темы.'), show_alert=True)
             return
         topic = await self._api_get(f'/api/topics/{tid}')
         if not topic:
@@ -775,15 +789,15 @@ class MentorMatchBot:
         is_admin = self._is_admin(update)
         if not is_admin:
             if viewer_id is None or author_id is None:
-                await q.answer(self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
+                await self._answer_callback(q, text=self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
                 return
             try:
                 if int(viewer_id) != int(author_id):
-                    await q.answer(self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
                     return
             except Exception:
                 if viewer_id != author_id:
-                    await q.answer(self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
+                    await self._answer_callback(q, text=self._fix_text('У вас нет прав редактировать эту тему.'), show_alert=True)
                     return
         context.user_data['awaiting'] = 'edit_topic_title'
         payload: Dict[str, Any] = {'topic_id': tid}
@@ -800,7 +814,7 @@ class MentorMatchBot:
 
     # Matching
     async def cb_match_student(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         sid = int(q.data.split('_')[2])
         res = await self._api_post('/match-student', data={'student_user_id': sid})
         if not res or res.get('status') != 'ok':
@@ -815,7 +829,7 @@ class MentorMatchBot:
 
     # Import students from Google Sheets
     async def cb_import_students(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         cfg = await self._api_get('/api/sheets-config')
         if not cfg or cfg.get('status') != 'configured':
             text = 'Google Sheets не настроен. Укажите SPREADSHEET_ID и SERVICE_ACCOUNT_FILE на сервере.'
@@ -846,7 +860,7 @@ class MentorMatchBot:
 
     # List menus with add buttons (new handlers)
     async def cb_list_students_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         data = await self._api_get('/api/students?limit=10') or []
         lines: List[str] = ['Студенты:']
         kb: List[List[InlineKeyboardButton]] = [
@@ -860,7 +874,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_list_supervisors_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         data = await self._api_get('/api/supervisors?limit=10') or []
         lines: List[str] = ['Научные руководители:']
         kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Научный руководитель', callback_data='add_supervisor')]]
@@ -871,7 +885,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_list_topics_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         data = await self._api_get('/api/topics?limit=10') or []
         lines: List[str] = ['Темы:']
         kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Тема', callback_data='add_topic')]]
@@ -883,7 +897,7 @@ class MentorMatchBot:
 
     # List menus with pagination navigation
     async def cb_list_students_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         offset = 0
         try:
             if '_' in (q.data or '') and q.data != 'list_students':
@@ -913,7 +927,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_list_supervisors_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         offset = 0
         try:
             if '_' in (q.data or '') and q.data != 'list_supervisors':
@@ -940,7 +954,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_list_topics_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         offset = 0
         try:
             if '_' in (q.data or '') and q.data != 'list_topics':
@@ -969,18 +983,18 @@ class MentorMatchBot:
 
     # Add flows (simple)
     async def cb_add_student_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         text = 'Добавление студентов выполняется через Google-форму и импорт в админке.'
         kb = [[InlineKeyboardButton('👨‍🎓 К студентам', callback_data='list_students')]]
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
 
     async def cb_add_supervisor_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         context.user_data['awaiting'] = 'add_supervisor_name'
         await q.edit_message_text(self._fix_text('Введите ФИО научного руководителя сообщением. Для отмены — /start'))
 
     async def cb_add_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         context.user_data['add_topic_payload'] = {}
         context.user_data['add_topic_endpoint'] = None
         kb = [
@@ -991,7 +1005,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('Выберите, кого ищет тема:'), reply_markup=self._mk(kb))
 
     async def cb_add_topic_choose(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         role = 'student' if q.data.endswith('_student') else 'supervisor'
         context.user_data['awaiting'] = 'add_topic_title'
         context.user_data['topic_role'] = role
@@ -1003,7 +1017,7 @@ class MentorMatchBot:
         )
 
     async def cb_add_role_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         try:
             tid = int(q.data.rsplit('_', 1)[1])
         except Exception:
@@ -1025,7 +1039,7 @@ class MentorMatchBot:
                 allowed = author_id == uid
         if not allowed:
             try:
-                await q.answer(self._fix_text('У вас нет прав добавлять роли к этой теме.'), show_alert=True)
+                await self._answer_callback(q, text=self._fix_text('У вас нет прав добавлять роли к этой теме.'), show_alert=True)
             except Exception:
                 pass
             return
@@ -1701,7 +1715,7 @@ class MentorMatchBot:
         )
 
     async def cb_match_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         tid = int(q.data.split('_')[2])
         res = await self._api_post('/match-topic', data={'topic_id': tid, 'target_role': 'supervisor'})
         if not res or res.get('status') not in ('ok', 'success'):
@@ -1716,7 +1730,7 @@ class MentorMatchBot:
 
     async def cb_match_students_for_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Back-compat: предложим выбрать роль
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         tid = int(q.data.rsplit('_', 1)[1])
         roles = await self._api_get(f'/api/topics/{tid}/roles') or []
         if not roles:
@@ -1729,7 +1743,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('Выберите роль для подбора студентов:'), reply_markup=self._mk(kb))
 
     async def cb_match_students_for_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         rid = int(q.data.rsplit('_', 1)[1])
         res = await self._api_post('/match-role', data={'role_id': rid})
         if not res or res.get('status') not in ('ok', 'success'):
@@ -1743,7 +1757,7 @@ class MentorMatchBot:
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_match_topics_for_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         # Parse user id from callback data; when invoked from 'for me' fallback to current user
         try:
             uid = int(q.data.rsplit('_', 1)[1])
@@ -1764,7 +1778,7 @@ class MentorMatchBot:
 
     # Back
     async def cb_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        q = update.callback_query; await q.answer()
+        q = update.callback_query; await self._answer_callback(q)
         if self._is_admin(update):
             await self.cmd_start(update, context)
             return
