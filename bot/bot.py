@@ -2350,6 +2350,7 @@ class MentorMatchBot:
             supervisor_id = it.get('user_id')
             if supervisor_id:
                 matched_supervisor_ids.append(str(supervisor_id))
+
                 if full_name and full_name != '–':
                     btn_title = f"👨‍🏫 {full_name[:40]}"
                 else:
@@ -2366,6 +2367,7 @@ class MentorMatchBot:
                 'author_user_id': topic_info.get('author_user_id'),
                 'supervisor_ids': matched_supervisor_ids,
             }
+
         kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
