@@ -255,7 +255,9 @@ class MentorMatchBot:
         if viewer_is_student:
             if topic_id:
                 kb.append([InlineKeyboardButton('К теме', callback_data=f'topic_{topic_id}')])
+
             kb.append([InlineKeyboardButton('Подать заявку', callback_data=f'apply_role_{rid}')])
+
             back_callback = context.user_data.get('student_match_back') or 'back_to_main'
             kb.append([InlineKeyboardButton('Назад', callback_data=back_callback)])
         else:
