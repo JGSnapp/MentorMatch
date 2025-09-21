@@ -10,14 +10,21 @@
     dt { font-weight: 600; }
     dd { margin: 0 0 8px 0; }
     .actions { margin: 12px 0; }
+    .muted { color:#64748b; }
     a.btn, button { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; text-decoration:none; }
     a.btn.secondary { background: #334155; }
     table { width:100%; border-collapse: collapse; }
-    th, td { border-bottom:1px solid #e2e8f0; padding:6px; text-align:left; }
+    th, td { border-bottom:1px solid #e2e8f0; padding:6px; text-align:left; vertical-align: top; }
+    .msg { margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: #ecfeff; border: 1px solid #38bdf8; }
+    details summary { cursor: pointer; color: #2563eb; margin-bottom: 6px; }
+    form.stacked-form { display: flex; flex-direction: column; gap: 6px; }
+    form.stacked-form textarea { width: 100%; min-height: 70px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; }
+    form.stacked-form button { align-self: flex-start; }
   </style>
   </head>
 <body>
   <h2>Роль #{{ role.id }} — {{ role.name }}</h2>
+  {% if msg %}<div class='msg'>{{ msg }}</div>{% endif %}
   <div class='actions'>
     <a class='btn secondary' href='/topic/{{ role.topic_id }}'>Назад к теме</a>
   </div>
@@ -41,17 +48,35 @@
     </dl>
   </div>
 
-  <div class='card' style='margin-top:12px;'>
+  <div class='card' id='role-candidates' style='margin-top:12px;'>
     <h3>Кандидаты (топ-10)</h3>
     {% if candidates %}
       <table>
-        <tr><th>Место</th><th>Студент</th><th>Username</th><th>Оценка</th></tr>
+        <tr><th>Место</th><th>Студент</th><th>Username</th><th>Оценка</th><th>Действия</th></tr>
         {% for c in candidates %}
           <tr>
             <td>{{ c.rank or '-' }}</td>
             <td><a href='/user/{{ c.user_id }}'>{{ c.full_name }}</a></td>
             <td>{{ c.username or '-' }}</td>
             <td>{{ '%.2f'|format(c.score) if c.score is not none else '-' }}</td>
+            <td>
+              {% if role.author_user_id %}
+                <details>
+                  <summary>Пригласить</summary>
+                  <form method='post' action='/send-request' class='stacked-form'>
+                    <input type='hidden' name='sender_user_id' value='{{ role.author_user_id }}' />
+                    <input type='hidden' name='receiver_user_id' value='{{ c.user_id }}' />
+                    <input type='hidden' name='topic_id' value='{{ role.topic_id }}' />
+                    <input type='hidden' name='role_id' value='{{ role.id }}' />
+                    <input type='hidden' name='return_url' value='{{ request.url.path }}#role-candidates' />
+                    <label>Сообщение<textarea name='body' required>{{ c.default_message }}</textarea></label>
+                    <button type='submit'>Отправить приглашение</button>
+                  </form>
+                </details>
+              {% else %}
+                <span class='muted'>Нет автора для заявки</span>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
       </table>

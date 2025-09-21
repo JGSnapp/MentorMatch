@@ -8,14 +8,23 @@
     body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin: 20px; line-height: 1.4; }
     .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 900px; }
     dt { font-weight: 600; }
+    .muted { color:#64748b; }
     dd { margin: 0 0 8px 0; }
     .actions { margin: 12px 0; }
     a.btn { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; text-decoration:none; }
     a.btn.secondary { background: #334155; }
+    .msg { margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: #ecfeff; border: 1px solid #38bdf8; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #e2e8f0; padding: 6px; text-align: left; vertical-align: top; }
+    details summary { cursor: pointer; color: #2563eb; margin-bottom: 6px; }
+    form.stacked-form { display: flex; flex-direction: column; gap: 6px; }
+    form.stacked-form textarea { width: 100%; min-height: 70px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; }
+    form.stacked-form button { align-self: flex-start; }
   </style>
 </head>
 <body>
   <h2>Тема #{{ topic.id }}</h2>
+  {% if msg %}<div class='msg'>{{ msg }}</div>{% endif %}
   <div class='actions'>
     <a class='btn' href='/edit-topic/{{ topic.id }}'>Изменить параметры</a>
     <a class='btn secondary' href='/?kind=topics'>Назад к списку</a>
@@ -77,6 +86,46 @@
       <label>Вместимость <input type='number' name='capacity' min='0' placeholder='опционально'></label>
       <button type='submit'>Добавить</button>
     </form>
+  </div>
+
+  <div class='card' id='supervisor-candidates' style='margin-top:12px;'>
+    <h3>Кандидаты в руководители</h3>
+    {% if supervisor_candidates %}
+      <table>
+        <tr><th>Место</th><th>Руководитель</th><th>Оценка</th><th>Действия</th></tr>
+        {% for s in supervisor_candidates %}
+          <tr>
+            <td>{{ s.rank or '-' }}</td>
+            <td>
+              <strong><a href='/supervisor/{{ s.user_id }}'>{{ s.full_name or ('Руководитель #' ~ s.user_id) }}</a></strong>
+              {% if s.username %}<div class='muted'>{{ s.username }}</div>{% endif %}
+              {% if s.position %}<div class='muted'>{{ s.position }}</div>{% endif %}
+              {% if s.capacity %}<div class='muted'>Лимит: {{ s.capacity }}</div>{% endif %}
+            </td>
+            <td>{{ '%.2f'|format(s.score) if s.score is not none else '-' }}</td>
+            <td>
+              {% if topic.author_user_id %}
+                <details>
+                  <summary>Пригласить</summary>
+                  <form method='post' action='/send-request' class='stacked-form'>
+                    <input type='hidden' name='sender_user_id' value='{{ topic.author_user_id }}' />
+                    <input type='hidden' name='receiver_user_id' value='{{ s.user_id }}' />
+                    <input type='hidden' name='topic_id' value='{{ topic.id }}' />
+                    <input type='hidden' name='return_url' value='{{ request.url.path }}#supervisor-candidates' />
+                    <label>Сообщение<textarea name='body' required>{{ s.default_message }}</textarea></label>
+                    <button type='submit'>Отправить приглашение</button>
+                  </form>
+                </details>
+              {% else %}
+                <span class='muted'>Нет автора темы для отправки заявки</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p class='muted'>Пока нет сохранённых рекомендаций. Нажмите «Подобрать руководителей», чтобы обновить список.</p>
+    {% endif %}
   </div>
 </body>
 </html>
