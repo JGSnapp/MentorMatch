@@ -976,6 +976,43 @@ class MentorMatchBot:
             await q.edit_message_text(self._fix_text('Эта тема ищет другую роль.'))
             return
         title = topic.get('title') or f'#{tid}'
+        if target_role == 'student':
+            roles = await self._api_get(f'/api/topics/{tid}/roles') or []
+            role_choices: List[tuple[int, str]] = []
+            for r in roles:
+                rid = self._parse_positive_int(r.get('id'))
+                if rid is None:
+                    continue
+                name = (r.get('name') or '').strip()
+                label = name or f'Роль #{rid}'
+                role_choices.append((rid, label))
+            if not role_choices:
+                kb = [[InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')]]
+                kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+                await q.message.reply_text(
+                    self._fix_text(
+                        'В этой теме пока нет ролей. Попросите автора добавить роли и попробуйте ещё раз.'
+                    ),
+                    reply_markup=self._mk(kb),
+                )
+                return
+            lines = [f'Чтобы подать заявку на тему «{title}», выберите конкретную роль:']
+            if role_choices:
+                lines.append('')
+                lines.append('Доступные роли:')
+                for _, label in role_choices:
+                    lines.append(f'• {label}')
+            kb = [
+                [InlineKeyboardButton(f'📨 {label[:40]}', callback_data=f'apply_role_{rid}')]
+                for rid, label in role_choices
+            ]
+            kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')])
+            kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+            await q.message.reply_text(
+                self._fix_text('\n'.join(lines)),
+                reply_markup=self._mk(kb),
+            )
+            return
         if target_role == 'supervisor':
             default_body = f'Здравствуйте! Готов(а) стать научным руководителем по теме "{title}".'
             prompt = (
