@@ -2305,9 +2305,22 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 тем для руководителя #{uid}:']
+        kb: List[List[InlineKeyboardButton]] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('title','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К профилю', callback_data=f'supervisor_{uid}')]]
+            title = (it.get('title') or '–').strip() or '–'
+            rank = it.get('rank')
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {title}{reason_suffix}")
+            tid = it.get('topic_id')
+            if tid:
+                if title and title != '–':
+                    button_title = f"📄 {title[:40]}"
+                else:
+                    button_title = f"📄 Тема {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(button_title), callback_data=f'topic_{tid}')])
+        kb.append([InlineKeyboardButton('⬅️ К профилю', callback_data=f'supervisor_{uid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     # Back
