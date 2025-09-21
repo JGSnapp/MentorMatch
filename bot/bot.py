@@ -142,6 +142,7 @@ class MentorMatchBot:
         self.app.add_handler(CallbackQueryHandler(self.cb_view_role, pattern=r'^role_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_apply_topic, pattern=r'^apply_topic_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_apply_role, pattern=r'^apply_role_\d+$'))
+        self.app.add_handler(CallbackQueryHandler(self.cb_invite_supervisor, pattern=r'^invite_supervisor_\d+_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_edit_student_start, pattern=r'^edit_student_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_edit_supervisor_start, pattern=r'^edit_supervisor_\d+$'))
         self.app.add_handler(CallbackQueryHandler(self.cb_edit_topic_start, pattern=r'^edit_topic_\d+$'))
@@ -235,7 +236,8 @@ class MentorMatchBot:
             allowed_by_status = True
             if approved_student_id is not None:
                 allowed_by_status = approved_for_viewer
-            can_apply = not same_author and allowed_by_status and bool(r.get('topic_id')) and bool(author_id)
+            has_author = author_id not in (None, '')
+            can_apply = has_author and not same_author and allowed_by_status
         if can_apply and approved_for_viewer:
             can_apply = False
         if can_apply:
@@ -265,7 +267,7 @@ class MentorMatchBot:
             return
         author_id = role.get('author_user_id')
         topic_id = role.get('topic_id')
-        if not author_id or not topic_id:
+        if author_id in (None, ''):
             await q.edit_message_text(self._fix_text('Не удалось определить получателя заявки.'))
             return
         try:
@@ -285,12 +287,15 @@ class MentorMatchBot:
                 await q.edit_message_text(self._fix_text('Роль уже занята другим студентом.'))
                 return
         role_name = role.get('name') or f'#{rid}'
-        topic_title = role.get('topic_title') or f'#{topic_id}'
-        default_body = f'Здравствуйте! Хотел(а) бы присоединиться к роли "{role_name}" по теме "{topic_title}".'
+        topic_title_raw = role.get('topic_title')
+        topic_title = topic_title_raw or (f'#{topic_id}' if topic_id not in (None, '') else None)
+        if topic_title:
+            default_body = f'Здравствуйте! Хотел(а) бы присоединиться к роли "{role_name}" по теме "{topic_title}".'
+        else:
+            default_body = f'Здравствуйте! Хотел(а) бы присоединиться к роли "{role_name}".'
         payload = {
             'sender_user_id': str(uid),
             'receiver_user_id': str(author_id),
-            'topic_id': str(topic_id),
             'role_id': str(rid),
             'role_name': role_name,
             'topic_title': topic_title,
@@ -298,6 +303,8 @@ class MentorMatchBot:
             'return_callback': f'role_{rid}',
             'source': 'role',
         }
+        if topic_id not in (None, ''):
+            payload['topic_id'] = str(topic_id)
         context.user_data['application_payload'] = payload
         context.user_data['awaiting'] = 'submit_application_body'
         prompt = (
@@ -795,6 +802,39 @@ class MentorMatchBot:
         if can_edit:
             kb.append([InlineKeyboardButton('✏️ Редактировать профиль', callback_data=f'edit_supervisor_{uid}')])
         kb.append([InlineKeyboardButton('🧠 Подобрать тему', callback_data=f'match_topics_for_supervisor_{uid}')])
+        invite_ctx = context.user_data.get('supervisor_invite_context') or {}
+        topic_id_for_invite = invite_ctx.get('topic_id')
+        supervisor_ids = {str(x) for x in (invite_ctx.get('supervisor_ids') or [])}
+        can_invite = False
+        if topic_id_for_invite and str(uid) in supervisor_ids:
+            if self._is_admin(update):
+                can_invite = True
+            else:
+                viewer_id = context.user_data.get('uid')
+                author_id = invite_ctx.get('author_user_id')
+                if viewer_id is not None and author_id not in (None, ''):
+                    try:
+                        can_invite = int(author_id) == int(viewer_id)
+                    except Exception:
+                        can_invite = author_id == viewer_id
+                elif viewer_id is not None:
+                    topic_info = await self._api_get(f'/api/topics/{topic_id_for_invite}')
+                    if topic_info:
+                        invite_ctx['author_user_id'] = topic_info.get('author_user_id')
+                        invite_ctx['topic_title'] = invite_ctx.get('topic_title') or topic_info.get('title') or f'#{topic_id_for_invite}'
+                        refreshed_author = invite_ctx.get('author_user_id')
+                        if refreshed_author not in (None, ''):
+                            try:
+                                can_invite = int(refreshed_author) == int(viewer_id)
+                            except Exception:
+                                can_invite = refreshed_author == viewer_id
+        if can_invite:
+            kb.append([
+                InlineKeyboardButton(
+                    '🤝 Предложить участие',
+                    callback_data=f'invite_supervisor_{topic_id_for_invite}_{uid}',
+                )
+            ])
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
 
@@ -1003,9 +1043,27 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 ролей для студента #{sid}:']
+        kb: List[List[InlineKeyboardButton]] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('role_name','–')} — {it.get('topic_title','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К студенту', callback_data=f'student_{sid}')]]
+            rank = it.get('rank')
+            role_name = (it.get('role_name') or '–').strip() or '–'
+            topic_title = (it.get('topic_title') or '–').strip() or '–'
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {role_name} — {topic_title}{reason_suffix}")
+            rid = it.get('role_id')
+            if rid:
+                if role_name and role_name != '–':
+                    btn_title = f"🎭 {role_name[:40]}"
+                elif topic_title and topic_title != '–':
+                    btn_title = f"🎭 Роль из {topic_title[:30]}"
+                else:
+                    btn_title = f"🎭 Роль {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(btn_title), callback_data=f'role_{rid}')])
+        if not kb:
+            lines.append('— подходящих ролей не найдено —')
+        kb.append([InlineKeyboardButton('⬅️ К студенту', callback_data=f'student_{sid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     # Messages (applications)
@@ -1547,9 +1605,11 @@ class MentorMatchBot:
             data = {
                 'sender_user_id': payload.get('sender_user_id'),
                 'receiver_user_id': payload.get('receiver_user_id'),
-                'topic_id': payload.get('topic_id'),
                 'body': body_text.strip(),
             }
+            topic_id_value = payload.get('topic_id')
+            if topic_id_value is not None:
+                data['topic_id'] = topic_id_value
             role_id = payload.get('role_id')
             if role_id:
                 data['role_id'] = role_id
@@ -1569,9 +1629,16 @@ class MentorMatchBot:
                     await self._get_message_details(context, uid, mid_int, refresh=True)
             except Exception:
                 pass
-            success_lines = ['✅ Заявка отправлена.']
+            source = payload_copy.get('source')
+            if source == 'supervisor_invite':
+                success_lines = ['✅ Приглашение отправлено.']
+            else:
+                success_lines = ['✅ Заявка отправлена.']
             if message_id is not None:
                 success_lines.append(f'Номер: #{message_id}')
+            receiver_name = payload_copy.get('receiver_name')
+            if receiver_name:
+                success_lines.append(f'Получатель: {receiver_name}')
             role_name = payload_copy.get('role_name')
             if role_name:
                 success_lines.append(f'Роль: {role_name}')
@@ -1581,7 +1648,12 @@ class MentorMatchBot:
             kb: List[List[InlineKeyboardButton]] = []
             return_cb = payload_copy.get('return_callback')
             if return_cb:
-                label = '⬅️ К роли' if payload_copy.get('source') == 'role' else '⬅️ К теме'
+                if source == 'role':
+                    label = '⬅️ К роли'
+                elif source == 'supervisor_invite':
+                    label = '⬅️ К руководителю'
+                else:
+                    label = '⬅️ К теме'
                 kb.append([InlineKeyboardButton(label, callback_data=return_cb)])
             kb.append([InlineKeyboardButton('📤 Мои заявки', callback_data='messages_outbox')])
             await update.message.reply_text(
@@ -2257,10 +2329,103 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 руководителей для темы #{tid}:']
+        kb: List[List[InlineKeyboardButton]] = []
+        matched_supervisor_ids: List[str] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('full_name','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')]]
+            rank = it.get('rank')
+            full_name = (it.get('full_name') or '–').strip() or '–'
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {full_name}{reason_suffix}")
+            supervisor_id = it.get('user_id')
+            if supervisor_id:
+                matched_supervisor_ids.append(str(supervisor_id))
+                if full_name and full_name != '–':
+                    btn_title = f"👨‍🏫 {full_name[:40]}"
+                else:
+                    btn_title = f"👨‍🏫 Руководитель {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(btn_title), callback_data=f'supervisor_{supervisor_id}')])
+        if not kb:
+            lines.append('— подходящих руководителей не найдено —')
+            context.user_data.pop('supervisor_invite_context', None)
+        else:
+            topic_info = await self._api_get(f'/api/topics/{tid}') or {}
+            context.user_data['supervisor_invite_context'] = {
+                'topic_id': tid,
+                'topic_title': topic_info.get('title') or f'#{tid}',
+                'author_user_id': topic_info.get('author_user_id'),
+                'supervisor_ids': matched_supervisor_ids,
+            }
+        kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
+
+    async def cb_invite_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await self._answer_callback(q)
+        parts = (q.data or '').split('_')
+        if len(parts) < 4:
+            await q.message.reply_text(self._fix_text('Не удалось подготовить приглашение. Попробуйте снова.'))
+            return
+        try:
+            topic_id = int(parts[2])
+            supervisor_id = int(parts[3])
+        except Exception:
+            await q.message.reply_text(self._fix_text('Некорректные данные приглашения.'))
+            return
+        sender_id = context.user_data.get('uid')
+        if sender_id is None:
+            await q.message.reply_text(self._fix_text('Сначала подтвердите профиль через /start.'))
+            return
+        topic = await self._api_get(f'/api/topics/{topic_id}')
+        if not topic:
+            await q.message.reply_text(self._fix_text('Тема не найдена. Попробуйте обновить список тем.'))
+            return
+        author_id = topic.get('author_user_id')
+        is_admin = self._is_admin(update)
+        if not is_admin:
+            if author_id in (None, ''):
+                await q.message.reply_text(self._fix_text('Не удалось определить автора темы для приглашения.'))
+                return
+            try:
+                is_author = int(author_id) == int(sender_id)
+            except Exception:
+                is_author = author_id == sender_id
+            if not is_author:
+                await q.message.reply_text(self._fix_text('Предлагать участие может только автор темы.'))
+                return
+        invite_ctx = context.user_data.get('supervisor_invite_context')
+        if isinstance(invite_ctx, dict) and invite_ctx.get('topic_id') == topic_id:
+            invite_ctx['topic_title'] = invite_ctx.get('topic_title') or topic.get('title') or f'#{topic_id}'
+            invite_ctx['author_user_id'] = invite_ctx.get('author_user_id') or author_id
+        supervisor = await self._api_get(f'/api/supervisors/{supervisor_id}')
+        if not supervisor:
+            await q.message.reply_text(self._fix_text('Профиль руководителя не найден.'))
+            return
+        receiver_user_id = supervisor.get('id') or supervisor.get('user_id') or supervisor_id
+        if receiver_user_id in (None, ''):
+            await q.message.reply_text(self._fix_text('Не удалось определить получателя приглашения.'))
+            return
+        topic_title = topic.get('title') or f'#{topic_id}'
+        supervisor_name = supervisor.get('full_name') or f'#{supervisor_id}'
+        default_body = f'Здравствуйте! Приглашаю вас стать научным руководителем темы "{topic_title}".'
+        prompt = (
+            f'Напишите приглашение для {supervisor_name} участвовать в теме «{topic_title}».\n'
+            'Кратко опишите задачи и ожидаемый вклад. Для отмены — /start. Можно отправить «-», чтобы использовать шаблон.'
+        )
+        payload = {
+            'sender_user_id': str(sender_id),
+            'receiver_user_id': str(receiver_user_id),
+            'topic_id': str(topic_id),
+            'role_id': None,
+            'topic_title': topic_title,
+            'receiver_name': supervisor_name,
+            'default_body': default_body,
+            'return_callback': f'supervisor_{supervisor_id}',
+            'source': 'supervisor_invite',
+        }
+        context.user_data['application_payload'] = payload
+        context.user_data['awaiting'] = 'submit_application_body'
+        await q.message.reply_text(self._fix_text(prompt))
 
     async def cb_match_students_for_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Back-compat: предложим выбрать роль
@@ -2285,9 +2450,24 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 студентов для роли #{rid}:']
+        kb: List[List[InlineKeyboardButton]] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('full_name','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К роли', callback_data=f'role_{rid}')]]
+            rank = it.get('rank')
+            full_name = (it.get('full_name') or '–').strip() or '–'
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {full_name}{reason_suffix}")
+            student_id = it.get('user_id')
+            if student_id:
+                if full_name and full_name != '–':
+                    btn_title = f"👤 {full_name[:40]}"
+                else:
+                    btn_title = f"👤 Студент {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(btn_title), callback_data=f'student_{student_id}')])
+        if not kb:
+            lines.append('— подходящих студентов не найдено —')
+        kb.append([InlineKeyboardButton('⬅️ К роли', callback_data=f'role_{rid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_match_topics_for_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2305,9 +2485,22 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 тем для руководителя #{uid}:']
+        kb: List[List[InlineKeyboardButton]] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('title','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К профилю', callback_data=f'supervisor_{uid}')]]
+            title = (it.get('title') or '–').strip() or '–'
+            rank = it.get('rank')
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {title}{reason_suffix}")
+            tid = it.get('topic_id')
+            if tid:
+                if title and title != '–':
+                    button_title = f"📄 {title[:40]}"
+                else:
+                    button_title = f"📄 Тема {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(button_title), callback_data=f'topic_{tid}')])
+        kb.append([InlineKeyboardButton('⬅️ К профилю', callback_data=f'supervisor_{uid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     # Back
