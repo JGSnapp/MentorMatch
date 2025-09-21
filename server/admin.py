@@ -433,6 +433,13 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             with get_conn() as conn, conn.cursor() as cur:
                 role_id_val = parse_optional_int(role_id)
                 topic_id_int = int(topic_id)
+                cur.execute('SELECT role FROM users WHERE id=%s', (sender_user_id,))
+                sender_row = cur.fetchone()
+                sender_role = (sender_row[0] or '').strip().lower() if sender_row else None
+                if not sender_role:
+                    return _redirect(return_url, 'Не удалось определить роль отправителя заявки')
+                if sender_role == 'student' and role_id_val is None:
+                    return _redirect(return_url, 'Студент должен выбрать конкретную роль для заявки')
                 if role_id_val is not None:
                     cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (role_id_val, topic_id_int))
                     if not cur.fetchone():
