@@ -1713,7 +1713,14 @@ def api_messages_send(
 ):
     msg_id: Optional[int] = None
     with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT role FROM users WHERE id=%s', (sender_user_id,))
+        sender_row = cur.fetchone()
+        sender_role = (sender_row[0] or '').strip().lower() if sender_row else None
+        if not sender_role:
+            return {'status': 'error', 'message': 'sender not found or role undefined'}
         role_id_val = parse_optional_int(role_id)
+        if sender_role == 'student' and role_id_val is None:
+            return {'status': 'error', 'message': 'role_id is required for student applications'}
         # Validate role belongs to topic
         if role_id_val is not None:
             cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (role_id_val, int(topic_id)))

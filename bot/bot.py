@@ -218,7 +218,7 @@ class MentorMatchBot:
             await q.edit_message_text(self._fix_text('Роль не найдена'))
             return
         viewer_id = context.user_data.get('uid')
-        viewer_role_name = (context.user_data.get('role') or '').lower()
+        viewer_role_name = self._normalize_role_value(context.user_data.get('role'))
         author_id = r.get('author_user_id')
         approved_student_id = self._parse_positive_int(r.get('approved_student_user_id'))
         approved_for_viewer = self._ids_equal(approved_student_id, viewer_id)
@@ -250,16 +250,14 @@ class MentorMatchBot:
                 lines.append(f"#{it.get('rank')}. {it.get('full_name','')}" + uname_str + f" (балл={it.get('score')})")
         text = '\n'.join(lines)
         kb: List[List[InlineKeyboardButton]] = []
-        if can_edit:
-            kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
-        can_apply = False
-        if viewer_role_name == 'student' and viewer_id is not None:
+        viewer_is_student = viewer_role_name == 'student'
+        if viewer_is_student and viewer_id is not None:
             has_author = author_id not in (None, '', 0, '0')
             same_author = self._ids_equal(author_id, viewer_id)
             if has_author and not same_author and not approved_for_viewer:
-                can_apply = True
-        if can_apply:
-            kb.append([InlineKeyboardButton('📨 Подать заявку', callback_data=f'apply_role_{rid}')])
+                kb.append([InlineKeyboardButton('📨 Откликнуться на роль', callback_data=f'apply_role_{rid}')])
+        if can_edit:
+            kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
         kb.append([InlineKeyboardButton('🧠 Подобрать студентов', callback_data=f'match_role_{rid}')])
         topic_id = r.get('topic_id')
         if topic_id:
@@ -275,7 +273,7 @@ class MentorMatchBot:
             await q.edit_message_text(self._fix_text('Некорректный идентификатор роли.'))
             return
         uid = context.user_data.get('uid')
-        viewer_role = (context.user_data.get('role') or '').lower()
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
         if not uid or viewer_role != 'student':
             await q.edit_message_text(self._fix_text('Подать заявку могут только студенты. Запустите /start.'))
             return
@@ -501,7 +499,8 @@ class MentorMatchBot:
                     context.user_data['uid'] = int(confirmed_match.get('id'))
                 except Exception:
                     context.user_data['uid'] = confirmed_match.get('id')
-                context.user_data['role'] = confirmed_match.get('role')
+                match_role = confirmed_match.get('role')
+                context.user_data['role'] = self._normalize_role_value(match_role) or match_role
                 await self._show_role_menu(update, context)
                 return
         if not matches:
@@ -553,7 +552,7 @@ class MentorMatchBot:
         if not prof or prof.get('error'):
             role = 'supervisor'
         context.user_data['uid'] = uid
-        context.user_data['role'] = role
+        context.user_data['role'] = self._normalize_role_value(role) or role
         await self._show_role_menu(update, context)
 
     async def cb_not_me(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -580,11 +579,13 @@ class MentorMatchBot:
             await q.edit_message_text(self._fix_text('Не удалось зарегистрироваться. Попробуйте позже.'))
             return
         context.user_data['uid'] = int(res.get('user_id'))
-        context.user_data['role'] = res.get('role')
+        res_role = res.get('role')
+        context.user_data['role'] = self._normalize_role_value(res_role) or res_role
         await self._show_role_menu(update, context)
 
     async def _show_role_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        role = context.user_data.get('role')
+        raw_role = context.user_data.get('role')
+        role = self._normalize_role_value(raw_role) or raw_role
         uid = context.user_data.get('uid')
         if role == 'student':
             kb = [
@@ -890,7 +891,7 @@ class MentorMatchBot:
             return
         author_id = t.get('author_user_id')
         uid = context.user_data.get('uid')
-        viewer_role_name = (context.user_data.get('role') or '').lower()
+        viewer_role_name = self._normalize_role_value(context.user_data.get('role')) or ''
         can_add_role = False
         if self._is_admin(update):
             can_add_role = True
@@ -932,10 +933,7 @@ class MentorMatchBot:
             same_author = False
         target_role = (role or 'student').lower()
         if uid is not None and not same_author and target_role in {'student', 'supervisor'}:
-            try:
-                viewer_matches = target_role == viewer_role_name
-            except Exception:
-                viewer_matches = target_role == (viewer_role_name or '')
+            viewer_matches = target_role == viewer_role_name
             can_apply_topic = viewer_matches and bool(author_id)
         if can_apply_topic:
             apply_text = '📨 Подать заявку на тему' if target_role == 'student' else '📨 Откликнуться на тему'
@@ -952,7 +950,7 @@ class MentorMatchBot:
             await q.edit_message_text(self._fix_text('Некорректный идентификатор темы.'))
             return
         uid = context.user_data.get('uid')
-        viewer_role = (context.user_data.get('role') or '').lower()
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
         if not uid:
             await q.edit_message_text(self._fix_text('Сначала подтвердите профиль через /start.'))
             return
@@ -976,6 +974,43 @@ class MentorMatchBot:
             await q.edit_message_text(self._fix_text('Эта тема ищет другую роль.'))
             return
         title = topic.get('title') or f'#{tid}'
+        if target_role == 'student':
+            roles = await self._api_get(f'/api/topics/{tid}/roles') or []
+            role_choices: List[tuple[int, str]] = []
+            for r in roles:
+                rid = self._parse_positive_int(r.get('id'))
+                if rid is None:
+                    continue
+                name = (r.get('name') or '').strip()
+                label = name or f'Роль #{rid}'
+                role_choices.append((rid, label))
+            if not role_choices:
+                kb = [[InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')]]
+                kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+                await q.message.reply_text(
+                    self._fix_text(
+                        'В этой теме пока нет ролей. Попросите автора добавить роли и попробуйте ещё раз.'
+                    ),
+                    reply_markup=self._mk(kb),
+                )
+                return
+            lines = [f'Чтобы подать заявку на тему «{title}», выберите конкретную роль:']
+            if role_choices:
+                lines.append('')
+                lines.append('Доступные роли:')
+                for _, label in role_choices:
+                    lines.append(f'• {label}')
+            kb = [
+                [InlineKeyboardButton(f'📨 {label[:40]}', callback_data=f'apply_role_{rid}')]
+                for rid, label in role_choices
+            ]
+            kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')])
+            kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+            await q.message.reply_text(
+                self._fix_text('\n'.join(lines)),
+                reply_markup=self._mk(kb),
+            )
+            return
         if target_role == 'supervisor':
             default_body = f'Здравствуйте! Готов(а) стать научным руководителем по теме "{title}".'
             prompt = (
