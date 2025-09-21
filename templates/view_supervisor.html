@@ -8,14 +8,23 @@
     body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin: 20px; line-height: 1.4; }
     .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; max-width: 900px; }
     dt { font-weight: 600; }
+    .muted { color:#64748b; }
     dd { margin: 0 0 8px 0; }
     .actions { margin: 12px 0; }
     a.btn { background: #2563eb; color: white; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; text-decoration:none; }
     a.btn.secondary { background: #334155; }
+    .msg { margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: #ecfeff; border: 1px solid #38bdf8; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #e2e8f0; padding: 6px; text-align: left; vertical-align: top; }
+    details summary { cursor: pointer; color: #2563eb; margin-bottom: 6px; }
+    form.stacked-form { display: flex; flex-direction: column; gap: 6px; }
+    form.stacked-form textarea { width: 100%; min-height: 70px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; }
+    form.stacked-form button { align-self: flex-start; }
   </style>
 </head>
 <body>
   <h2>Профиль руководителя #{{ sup.id }}</h2>
+  {% if msg %}<div class='msg'>{{ msg }}</div>{% endif %}
   <div class='actions'>
     <a class='btn' href='/edit-supervisor/{{ sup.id }}'>Изменить параметры</a>
     <a class='btn secondary' href='/?kind=supervisors'>Назад к списку</a>
@@ -35,6 +44,45 @@
       <dt>Интересы</dt><dd>{{ sup.interests or '-' }}</dd>
       <dt>Требования</dt><dd>{{ sup.requirements or '-' }}</dd>
     </dl>
+  </div>
+
+  <div class='card' id='recommended-topics' style='margin-top:12px;'>
+    <h3>Рекомендованные темы</h3>
+    {% if recommended_topics %}
+      <table>
+        <tr><th>Место</th><th>Тема</th><th>Оценка</th><th>Действия</th></tr>
+        {% for t in recommended_topics %}
+          <tr>
+            <td>{{ t.rank or '-' }}</td>
+            <td>
+              <strong><a href='/topic/{{ t.topic_id }}'>{{ t.title or ('Тема #' ~ t.topic_id) }}</a></strong>
+              <div class='muted'>Автор: {{ t.author_name or '-' }}</div>
+              {% if t.direction %}<div class='muted'>Направление: {{ t.direction }}</div>{% endif %}
+            </td>
+            <td>{{ '%.2f'|format(t.score) if t.score is not none else '-' }}</td>
+            <td>
+              {% if t.author_user_id %}
+                <details>
+                  <summary>Предложить участие</summary>
+                  <form method='post' action='/send-request' class='stacked-form'>
+                    <input type='hidden' name='sender_user_id' value='{{ sup.id }}' />
+                    <input type='hidden' name='receiver_user_id' value='{{ t.author_user_id }}' />
+                    <input type='hidden' name='topic_id' value='{{ t.topic_id }}' />
+                    <input type='hidden' name='return_url' value='{{ request.url.path }}#recommended-topics' />
+                    <label>Сообщение<textarea name='body' required>{{ t.default_message }}</textarea></label>
+                    <button type='submit'>Отправить заявку</button>
+                  </form>
+                </details>
+              {% else %}
+                <span class='muted'>Нет автора для заявки</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p class='muted'>Пока нет сохранённых рекомендаций. Нажмите «Подобрать темы», чтобы обновить список.</p>
+    {% endif %}
   </div>
 </body>
 </html>

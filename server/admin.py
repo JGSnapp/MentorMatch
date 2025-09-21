@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from typing import Optional, List, Dict, Any, Callable
 
 import psycopg2.extras
@@ -111,7 +112,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
 
     # --- Profiles (HTML views) ---
     @router.get('/user/{user_id}')
-    def view_user(request: Request, user_id: int):
+    def view_user(request: Request, user_id: int, msg: Optional[str] = None):
         import psycopg2.extras
         with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
@@ -121,23 +122,71 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             user = dict(user)
             student = None
             supervisor = None
+            recommended_roles: List[Dict[str, Any]] = []
+            recommended_topics: List[Dict[str, Any]] = []
             if user.get('role') == 'student':
                 cur.execute("SELECT * FROM student_profiles WHERE user_id=%s", (user_id,))
                 row = cur.fetchone()
                 student = dict(row) if row else None
+                cur.execute(
+                    '''
+                    SELECT sc.role_id, sc.rank, sc.score,
+                           r.name AS role_name, r.description, r.required_skills, r.capacity,
+                           t.id AS topic_id, t.title AS topic_title, t.author_user_id,
+                           u.full_name AS author_name
+                    FROM student_candidates sc
+                    JOIN roles r ON r.id = sc.role_id
+                    JOIN topics t ON t.id = r.topic_id
+                    JOIN users u ON u.id = t.author_user_id
+                    WHERE sc.user_id = %s
+                    ORDER BY sc.rank ASC NULLS LAST, sc.score DESC NULLS LAST, t.created_at DESC
+                    LIMIT 10
+                    ''',
+                    (user_id,),
+                )
+                recommended_roles = [dict(r) for r in cur.fetchall()]
+                for r in recommended_roles:
+                    role_label = r.get('role_name') or f"Роль #{r.get('role_id')}"
+                    topic_label = r.get('topic_title') or f"Тема #{r.get('topic_id')}"
+                    r['default_message'] = (
+                        f"Здравствуйте! Хотел(а) бы присоединиться к роли «{role_label}» по теме «{topic_label}»."
+                    )
             elif user.get('role') == 'supervisor':
                 cur.execute("SELECT * FROM supervisor_profiles WHERE user_id=%s", (user_id,))
                 row = cur.fetchone()
                 supervisor = dict(row) if row else None
+                cur.execute(
+                    '''
+                    SELECT sc.topic_id, sc.rank, sc.score,
+                           t.title, t.description, t.required_skills, t.expected_outcomes, t.direction,
+                           t.author_user_id, u.full_name AS author_name
+                    FROM supervisor_candidates sc
+                    JOIN topics t ON t.id = sc.topic_id
+                    JOIN users u ON u.id = t.author_user_id
+                    WHERE sc.user_id = %s
+                    ORDER BY sc.rank ASC NULLS LAST, sc.score DESC NULLS LAST, t.created_at DESC
+                    LIMIT 10
+                    ''',
+                    (user_id,),
+                )
+                recommended_topics = [dict(r) for r in cur.fetchall()]
+                for t in recommended_topics:
+                    topic_label = t.get('title') or f"Тема #{t.get('topic_id')}"
+                    t['default_message'] = (
+                        f"Здравствуйте! Готов(а) обсудить тему «{topic_label}» в качестве научного руководителя."
+                    )
         return templates.TemplateResponse('view_user.html', {
             'request': request,
             'user': user,
             'student': student,
             'supervisor': supervisor,
+            'recommended_roles': recommended_roles,
+            'recommended_topics': recommended_topics,
+            'msg': msg,
         })
 
     @router.get('/supervisor/{user_id}')
-    def view_supervisor(request: Request, user_id: int):
+    def view_supervisor(request: Request, user_id: int, msg: Optional[str] = None):
         import psycopg2.extras
         with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -153,13 +202,35 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             if not sup:
                 return RedirectResponse(url='/?msg=Руководитель не найден&kind=supervisors', status_code=303)
             sup = dict(sup)
+            cur.execute(
+                '''
+                SELECT sc.topic_id, sc.rank, sc.score,
+                       t.title, t.description, t.required_skills, t.expected_outcomes, t.direction,
+                       t.author_user_id, u.full_name AS author_name
+                FROM supervisor_candidates sc
+                JOIN topics t ON t.id = sc.topic_id
+                JOIN users u ON u.id = t.author_user_id
+                WHERE sc.user_id = %s
+                ORDER BY sc.rank ASC NULLS LAST, sc.score DESC NULLS LAST, t.created_at DESC
+                LIMIT 10
+                ''',
+                (user_id,),
+            )
+            recommended_topics = [dict(r) for r in cur.fetchall()]
+            for t in recommended_topics:
+                topic_label = t.get('title') or f"Тема #{t.get('topic_id')}"
+                t['default_message'] = (
+                    f"Здравствуйте! Готов(а) обсудить тему «{topic_label}» в качестве научного руководителя."
+                )
         return templates.TemplateResponse('view_supervisor.html', {
             'request': request,
             'sup': sup,
+            'recommended_topics': recommended_topics,
+            'msg': msg,
         })
 
     @router.get('/topic/{topic_id}')
-    def view_topic(request: Request, topic_id: int):
+    def view_topic(request: Request, topic_id: int, msg: Optional[str] = None):
         import psycopg2.extras
         with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -179,14 +250,38 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 (topic_id,),
             )
             roles = [dict(r) for r in cur.fetchall()]
+            cur.execute(
+                '''
+                SELECT tc.rank, tc.score,
+                       u.id AS user_id, u.full_name, u.username,
+                       sp.position, sp.degree, sp.capacity, sp.interests
+                FROM topic_candidates tc
+                JOIN users u ON u.id = tc.user_id AND u.role = 'supervisor'
+                LEFT JOIN supervisor_profiles sp ON sp.user_id = u.id
+                WHERE tc.topic_id = %s
+                ORDER BY tc.rank ASC NULLS LAST, tc.score DESC NULLS LAST, u.created_at DESC
+                LIMIT 10
+                ''',
+                (topic_id,),
+            )
+            supervisor_candidates = [dict(r) for r in cur.fetchall()]
+            topic_title = topic.get('title') or f"Тема #{topic_id}"
+            for cand in supervisor_candidates:
+                name = cand.get('full_name')
+                greeting = f"Здравствуйте{', ' + name if name else ''}!"
+                cand['default_message'] = (
+                    f"{greeting} Приглашаю вас рассмотреть тему «{topic_title}» в качестве научного руководителя."
+                )
         return templates.TemplateResponse('view_topic.html', {
             'request': request,
             'topic': topic,
             'roles': roles,
+            'supervisor_candidates': supervisor_candidates,
+            'msg': msg,
         })
 
     @router.get('/role/{role_id}')
-    def view_role(request: Request, role_id: int):
+    def view_role(request: Request, role_id: int, msg: Optional[str] = None):
         import psycopg2.extras
         with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -213,10 +308,19 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 ''', (role_id,),
             )
             candidates = [dict(r) for r in cur.fetchall()]
+            role_title = role.get('name') or f"Роль #{role_id}"
+            topic_title = role.get('topic_title') or f"Тема #{role.get('topic_id')}"
+            for cand in candidates:
+                name = cand.get('full_name')
+                greeting = f"Здравствуйте{', ' + name if name else ''}!"
+                cand['default_message'] = (
+                    f"{greeting} Приглашаю присоединиться к роли «{role_title}» по теме «{topic_title}»."
+                )
         return templates.TemplateResponse('view_role.html', {
             'request': request,
             'role': role,
             'candidates': candidates,
+            'msg': msg,
         })
 
     # --- Action wrappers (redirect back instead of raw JSON) ---
@@ -302,6 +406,50 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             return RedirectResponse(url=f'/supervisor/{supervisor_user_id}', status_code=303)
         except Exception as e:
             return RedirectResponse(url=f'/supervisor/{supervisor_user_id}?msg=Ошибка подбора: {type(e).__name__}', status_code=303)
+
+    @router.post('/send-request')
+    def send_request(
+        sender_user_id: int = Form(...),
+        receiver_user_id: int = Form(...),
+        topic_id: int = Form(...),
+        body: str = Form(...),
+        role_id: Optional[str] = Form(None),
+        return_url: str = Form('/'),
+    ):
+        def _redirect(target: Optional[str], message: str) -> RedirectResponse:
+            base = (target or '/').strip() or '/'
+            anchor = ''
+            if '#' in base:
+                base, anchor = base.split('#', 1)
+                anchor = f'#{anchor}'
+            sep = '&' if '?' in base else '?'
+            quoted = urllib.parse.quote(message)
+            return RedirectResponse(url=f'{base}{sep}msg={quoted}{anchor}', status_code=303)
+
+        text = (body or '').strip()
+        if not text:
+            return _redirect(return_url, 'Текст заявки не может быть пустым')
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                role_id_val = parse_optional_int(role_id)
+                topic_id_int = int(topic_id)
+                if role_id_val is not None:
+                    cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (role_id_val, topic_id_int))
+                    if not cur.fetchone():
+                        return _redirect(return_url, 'Роль не принадлежит выбранной теме')
+                cur.execute(
+                    '''
+                    INSERT INTO messages(sender_user_id, receiver_user_id, topic_id, role_id, body, status, created_at)
+                    VALUES (%s, %s, %s, %s, %s, 'pending', now())
+                    RETURNING id
+                    ''',
+                    (sender_user_id, receiver_user_id, topic_id_int, role_id_val, text),
+                )
+                msg_id = cur.fetchone()[0]
+                conn.commit()
+            return _redirect(return_url, f'Заявка отправлена (#{msg_id})')
+        except Exception as e:
+            return _redirect(return_url, f'Ошибка отправки заявки: {type(e).__name__}')
 
     @router.post('/import-sheet')
     def import_sheet(request: Request, spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
