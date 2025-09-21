@@ -250,19 +250,21 @@ class MentorMatchBot:
                 lines.append(f"#{it.get('rank')}. {it.get('full_name','')}" + uname_str + f" (балл={it.get('score')})")
         text = '\n'.join(lines)
         kb: List[List[InlineKeyboardButton]] = []
-        viewer_is_student = viewer_role_name == 'student'
-        if viewer_is_student and viewer_id is not None:
-            has_author = author_id not in (None, '', 0, '0')
-            same_author = self._ids_equal(author_id, viewer_id)
-            if has_author and not same_author and not approved_for_viewer:
-                kb.append([InlineKeyboardButton('📨 Откликнуться на роль', callback_data=f'apply_role_{rid}')])
-        if can_edit:
-            kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
-        kb.append([InlineKeyboardButton('🧠 Подобрать студентов', callback_data=f'match_role_{rid}')])
         topic_id = r.get('topic_id')
-        if topic_id:
-            kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{topic_id}')])
-        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        viewer_is_student = viewer_role_name == 'student'
+        if viewer_is_student:
+            if topic_id:
+                kb.append([InlineKeyboardButton('К теме', callback_data=f'topic_{topic_id}')])
+            kb.append([InlineKeyboardButton('Подать заявку', callback_data=f'apply_role_{rid}')])
+            back_callback = context.user_data.get('student_match_back') or 'back_to_main'
+            kb.append([InlineKeyboardButton('Назад', callback_data=back_callback)])
+        else:
+            if can_edit:
+                kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
+            kb.append([InlineKeyboardButton('🧠 Подобрать студентов', callback_data=f'match_role_{rid}')])
+            if topic_id:
+                kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{topic_id}')])
+            kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
 
     async def cb_apply_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,6 +456,7 @@ class MentorMatchBot:
             'edit_role_original',
             'application_payload',
             'messages_cache',
+            'student_match_back',
         ):
             context.user_data.pop(key, None)
         # Admins: старое меню целиком
@@ -587,6 +590,7 @@ class MentorMatchBot:
         raw_role = context.user_data.get('role')
         role = self._normalize_role_value(raw_role) or raw_role
         uid = context.user_data.get('uid')
+        context.user_data.pop('student_match_back', None)
         if role == 'student':
             kb = [
                 [InlineKeyboardButton('👤 Мой профиль', callback_data='student_me')],
@@ -1081,33 +1085,41 @@ class MentorMatchBot:
     async def cb_match_student(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await self._answer_callback(q)
         sid = int(q.data.split('_')[2])
+        viewer_id = context.user_data.get('uid')
+        same_user = self._ids_equal(viewer_id, sid)
+        is_admin = self._is_admin(update)
         res = await self._api_post('/match-student', data={'student_user_id': sid})
         if not res or res.get('status') != 'ok':
             await q.edit_message_text(self._fix_text('Ошибка подбора ролей для студента'))
             return
         items = res.get('items', [])
-        lines = [f'Топ‑5 ролей для студента #{sid}:']
+        lines = [f'Подходящие роли для студента #{sid}:']
         kb: List[List[InlineKeyboardButton]] = []
+        context.user_data['student_match_back'] = f'match_student_{sid}'
         for it in items:
             rank = it.get('rank')
             role_name = (it.get('role_name') or '–').strip() or '–'
             topic_title = (it.get('topic_title') or '–').strip() or '–'
-            reason = (it.get('reason') or '').strip()
+            reason_raw = (it.get('reason') or '').strip()
+            reason = ' '.join(reason_raw.split())
             rank_label = f"#{rank}" if rank else '#?'
-            reason_suffix = f" — {reason}" if reason else ''
-            lines.append(f"{rank_label}. {role_name} — {topic_title}{reason_suffix}")
+            lines.append(f"{rank_label}. {role_name} — {topic_title}")
+            if reason:
+                lines.append(f"   Почему подходит: {reason}")
             rid = it.get('role_id')
             if rid:
-                if role_name and role_name != '–':
-                    btn_title = f"🎭 {role_name[:40]}"
-                elif topic_title and topic_title != '–':
-                    btn_title = f"🎭 Роль из {topic_title[:30]}"
-                else:
-                    btn_title = f"🎭 Роль {rank_label}"
+                btn_title_source = role_name if role_name and role_name != '–' else ''
+                if not btn_title_source and topic_title and topic_title != '–':
+                    btn_title_source = topic_title
+                if not btn_title_source:
+                    btn_title_source = f'Роль {rank_label}'
+                btn_title = btn_title_source[:40]
                 kb.append([InlineKeyboardButton(self._fix_text(btn_title), callback_data=f'role_{rid}')])
         if not kb:
             lines.append('— подходящих ролей не найдено —')
-        kb.append([InlineKeyboardButton('⬅️ К студенту', callback_data=f'student_{sid}')])
+        if is_admin or not same_user:
+            kb.append([InlineKeyboardButton('К профилю студента', callback_data=f'student_{sid}')])
+        kb.append([InlineKeyboardButton('Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     # Messages (applications)
@@ -2552,6 +2564,7 @@ class MentorMatchBot:
     # Back
     async def cb_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await self._answer_callback(q)
+        context.user_data.pop('student_match_back', None)
         if self._is_admin(update):
             await self.cmd_start(update, context)
             return
