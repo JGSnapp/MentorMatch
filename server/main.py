@@ -1,6 +1,9 @@
 ﻿import os
+import json
+import logging
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from urllib import request as urllib_request
 
 from fastapi import FastAPI, Form, Query, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
@@ -22,6 +25,7 @@ from sheet_pairs import export_pairs_from_db
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 
 def build_db_dsn() -> str:
     dsn = os.getenv('DATABASE_URL')
@@ -37,6 +41,67 @@ def build_db_dsn() -> str:
 
 def get_conn():
     return psycopg2.connect(build_db_dsn())
+
+
+def _shorten(text: Optional[str], limit: int = 60) -> str:
+    if text is None:
+        return ''
+    s = str(text).strip()
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 1)].rstrip() + '…'
+
+
+def _display_name(name: Optional[str], fallback_id: Optional[Any]) -> str:
+    if name:
+        stripped = str(name).strip()
+        if stripped:
+            return stripped
+    if fallback_id not in (None, ''):
+        return f'#{fallback_id}'
+    return 'Пользователь'
+
+
+def _send_telegram_notification(telegram_id: Optional[Any], text: str, *, button_text: Optional[str] = None, callback_data: Optional[str] = None) -> bool:
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    if not token:
+        logger.debug('Skipping telegram notification: TELEGRAM_BOT_TOKEN not set')
+        return False
+    if telegram_id in (None, '', 0):
+        return False
+    try:
+        chat_id = int(str(telegram_id).strip())
+    except Exception:
+        logger.warning('Invalid telegram_id value: %s', telegram_id)
+        return False
+    payload: Dict[str, Any] = {
+        'chat_id': chat_id,
+        'text': text,
+        'disable_web_page_preview': True,
+    }
+    if button_text and callback_data:
+        payload['reply_markup'] = {
+            'inline_keyboard': [
+                [
+                    {
+                        'text': button_text,
+                        'callback_data': callback_data,
+                    }
+                ]
+            ]
+        }
+    data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    url = f'https://api.telegram.org/bot{token}/sendMessage'
+    req = urllib_request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+    try:
+        with urllib_request.urlopen(req, timeout=10) as resp:
+            resp.read()
+        return True
+    except Exception as exc:
+        logger.warning('Failed to send Telegram notification to %s: %s', chat_id, exc)
+        return False
+
+
 
 
 app = FastAPI(title='MentorMatch Admin MVP')
@@ -477,19 +542,85 @@ def api_get_student(student_id: int):
 
 @app.get('/api/user-topics/{user_id}', response_class=JSONResponse)
 def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+    params = {'uid': user_id, 'offset': offset, 'limit': limit}
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
-            SELECT t.id, t.title, t.description, t.expected_outcomes, t.required_skills,
-                   t.seeking_role, t.direction, t.is_active, t.created_at
+            SELECT
+                t.id,
+                t.title,
+                t.description,
+                t.expected_outcomes,
+                t.required_skills,
+                t.seeking_role,
+                t.direction,
+                t.is_active,
+                t.created_at,
+                t.author_user_id,
+                (t.author_user_id = %(uid)s) AS is_author,
+                (t.approved_supervisor_user_id = %(uid)s) AS is_approved_supervisor,
+                EXISTS(
+                    SELECT 1
+                    FROM roles rs
+                    WHERE rs.topic_id = t.id AND rs.approved_student_user_id = %(uid)s
+                ) AS is_approved_student,
+                COALESCE(
+                    (
+                        SELECT ARRAY_AGG(DISTINCT rs.name)
+                        FROM roles rs
+                        WHERE rs.topic_id = t.id
+                          AND rs.approved_student_user_id = %(uid)s
+                          AND rs.name IS NOT NULL
+                          AND rs.name <> ''
+                    ),
+                    ARRAY[]::text[]
+                ) AS approved_role_names,
+                COALESCE(
+                    (
+                        SELECT ARRAY_AGG(DISTINCT rs.id)
+                        FROM roles rs
+                        WHERE rs.topic_id = t.id AND rs.approved_student_user_id = %(uid)s
+                    ),
+                    ARRAY[]::bigint[]
+                ) AS approved_role_ids
             FROM topics t
-            WHERE t.author_user_id = %s
+            WHERE t.author_user_id = %(uid)s
+               OR t.approved_supervisor_user_id = %(uid)s
+               OR EXISTS (
+                    SELECT 1
+                    FROM roles r2
+                    WHERE r2.topic_id = t.id AND r2.approved_student_user_id = %(uid)s
+               )
             ORDER BY t.created_at DESC
-            OFFSET %s LIMIT %s
-            ''', (user_id, offset, limit),
+            OFFSET %(offset)s LIMIT %(limit)s
+            ''', params,
         )
         rows = cur.fetchall()
-        return [dict(r) for r in rows]
+        normalized: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            role_names = data.get('approved_role_names') or []
+            if isinstance(role_names, list):
+                data['approved_role_names'] = [str(name) for name in role_names if name]
+            elif role_names in (None, ''):
+                data['approved_role_names'] = []
+            else:
+                data['approved_role_names'] = [str(role_names)]
+            role_ids = data.get('approved_role_ids') or []
+            if isinstance(role_ids, list):
+                cleaned_ids = []
+                for rid in role_ids:
+                    if rid in (None, ''):
+                        continue
+                    try:
+                        cleaned_ids.append(int(rid))
+                    except Exception:
+                        continue
+                data['approved_role_ids'] = cleaned_ids
+            else:
+                data['approved_role_ids'] = []
+            normalized.append(data)
+        return normalized
 
 
 @app.get('/api/sheets-status', response_class=JSONResponse)
@@ -1703,6 +1834,108 @@ def api_role_candidates(role_id: int, limit: int = Query(5, ge=1, le=50)):
 # =============================
 
 
+def _fetch_message_context(cur, message_id: int) -> Optional[Dict[str, Any]]:
+    cur.execute(
+        '''
+        SELECT
+            m.id,
+            m.sender_user_id,
+            m.receiver_user_id,
+            m.topic_id,
+            m.role_id,
+            m.status,
+            sender.full_name AS sender_name,
+            sender.telegram_id AS sender_telegram_id,
+            receiver.full_name AS receiver_name,
+            receiver.telegram_id AS receiver_telegram_id,
+            t.title AS topic_title,
+            r.name AS role_name
+        FROM messages m
+        JOIN users sender ON sender.id = m.sender_user_id
+        JOIN users receiver ON receiver.id = m.receiver_user_id
+        JOIN topics t ON t.id = m.topic_id
+        LEFT JOIN roles r ON r.id = m.role_id
+        WHERE m.id = %s
+        ''',
+        (message_id,),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _notify_new_application(message: Dict[str, Any]) -> None:
+    message_id = message.get('id')
+    if message_id is None:
+        return
+    chat_id = message.get('receiver_telegram_id')
+    if not chat_id:
+        return
+    sender_name = _display_name(message.get('sender_name'), message.get('sender_user_id'))
+    topic_label = message.get('topic_title') or f"#{message.get('topic_id')}"
+    topic_label = _shorten(topic_label, 70) or f"#{message.get('topic_id')}"
+    text = f"📨 Новая заявка от {sender_name} по теме «{topic_label}»."
+    role_name = message.get('role_name')
+    if role_name:
+        text += f"\nРоль: {role_name}"
+    _send_telegram_notification(
+        message.get('receiver_telegram_id'),
+        text,
+        button_text='Открыть заявку',
+        callback_data=f'message_{message_id}',
+    )
+
+
+def _notify_application_update(message: Dict[str, Any], action: str) -> None:
+    message_id = message.get('id')
+    if message_id is None:
+        return
+    topic_label = message.get('topic_title') or f"#{message.get('topic_id')}"
+    topic_label = _shorten(topic_label, 70) or f"#{message.get('topic_id')}"
+    role_name = message.get('role_name')
+    if action == 'accept':
+        chat_id = message.get('sender_telegram_id')
+        if not chat_id:
+            return
+        receiver_name = _display_name(message.get('receiver_name'), message.get('receiver_user_id'))
+        text = f"✅ {receiver_name} принял(а) вашу заявку по теме «{topic_label}»."
+        if role_name:
+            text += f"\nРоль: {role_name}"
+        _send_telegram_notification(
+            chat_id,
+            text,
+            button_text='Открыть заявку',
+            callback_data=f'message_{message_id}',
+        )
+    elif action == 'reject':
+        chat_id = message.get('sender_telegram_id')
+        if not chat_id:
+            return
+        receiver_name = _display_name(message.get('receiver_name'), message.get('receiver_user_id'))
+        text = f"❌ {receiver_name} отклонил(а) вашу заявку по теме «{topic_label}»."
+        if role_name:
+            text += f"\nРоль: {role_name}"
+        _send_telegram_notification(
+            chat_id,
+            text,
+            button_text='Открыть заявку',
+            callback_data=f'message_{message_id}',
+        )
+    elif action == 'cancel':
+        chat_id = message.get('receiver_telegram_id')
+        if not chat_id:
+            return
+        sender_name = _display_name(message.get('sender_name'), message.get('sender_user_id'))
+        text = f"🚫 {sender_name} отменил(а) заявку по теме «{topic_label}»."
+        if role_name:
+            text += f"\nРоль: {role_name}"
+        _send_telegram_notification(
+            chat_id,
+            text,
+            button_text='Открыть заявку',
+            callback_data=f'message_{message_id}',
+        )
+
+
 @app.post('/api/messages/send', response_class=JSONResponse)
 def api_messages_send(
     sender_user_id: int = Form(...),
@@ -1712,16 +1945,16 @@ def api_messages_send(
     role_id: Optional[str] = Form(None),
 ):
     msg_id: Optional[int] = None
-    with get_conn() as conn, conn.cursor() as cur:
+    message_ctx: Optional[Dict[str, Any]] = None
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute('SELECT role FROM users WHERE id=%s', (sender_user_id,))
-        sender_row = cur.fetchone()
-        sender_role = (sender_row[0] or '').strip().lower() if sender_row else None
+        sender_row = cur.fetchone() or {}
+        sender_role = (sender_row.get('role') or '').strip().lower() if sender_row else None
         if not sender_role:
             return {'status': 'error', 'message': 'sender not found or role undefined'}
         role_id_val = parse_optional_int(role_id)
         if sender_role == 'student' and role_id_val is None:
             return {'status': 'error', 'message': 'role_id is required for student applications'}
-        # Validate role belongs to topic
         if role_id_val is not None:
             cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (role_id_val, int(topic_id)))
             if not cur.fetchone():
@@ -1733,8 +1966,19 @@ def api_messages_send(
             RETURNING id
             ''', (sender_user_id, receiver_user_id, topic_id, role_id_val, body.strip()),
         )
-        msg_id = cur.fetchone()[0]
+        inserted = cur.fetchone() or {}
+        msg_id_raw = inserted.get('id')
+        msg_id = None
+        if msg_id_raw is not None:
+            try:
+                msg_id = int(msg_id_raw)
+            except Exception:
+                msg_id = msg_id_raw
+            else:
+                message_ctx = _fetch_message_context(cur, msg_id)
         conn.commit()
+    if message_ctx:
+        _notify_new_application(message_ctx)
     return {'status': 'ok', 'message_id': msg_id}
 
 
@@ -1805,30 +2049,29 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
     act = (action or 'accept').strip().lower()
     if act not in ('accept', 'reject', 'cancel'):
         return {'status': 'error', 'message': 'invalid action'}
+    notify_ctx: Optional[Dict[str, Any]] = None
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute('SELECT * FROM messages WHERE id=%s', (message_id,))
-        msg = cur.fetchone()
+        msg = _fetch_message_context(cur, message_id)
         if not msg:
             return {'status': 'error', 'message': 'message not found'}
-        msg = dict(msg)
         # Permissions: accept/reject by receiver, cancel by sender
-        if act in ('accept', 'reject') and msg['receiver_user_id'] != responder_user_id:
+        if act in ('accept', 'reject') and msg.get('receiver_user_id') != responder_user_id:
             return {'status': 'error', 'message': 'only receiver can accept/reject'}
-        if act == 'cancel' and msg['sender_user_id'] != responder_user_id:
+        if act == 'cancel' and msg.get('sender_user_id') != responder_user_id:
             return {'status': 'error', 'message': 'only sender can cancel'}
-
         status = 'accepted' if act == 'accept' else ('rejected' if act == 'reject' else 'canceled')
         cur.execute('UPDATE messages SET status=%s, answer=%s, responded_at=now() WHERE id=%s', (status, (answer or None), message_id))
-
-        # On accept â‰ˆ set approved links
         if act == 'accept':
             if msg.get('role_id'):
-                # Approve student for role (receiver becomes approved student)
-                cur.execute('UPDATE roles SET approved_student_user_id=%s WHERE id=%s', (msg['receiver_user_id'], msg['role_id']))
+                cur.execute('UPDATE roles SET approved_student_user_id=%s WHERE id=%s', (msg.get('receiver_user_id'), msg.get('role_id')))
             else:
-                # Approve supervisor for topic
-                cur.execute('UPDATE topics SET approved_supervisor_user_id=%s WHERE id=%s', (msg['receiver_user_id'], msg['topic_id']))
+                cur.execute('UPDATE topics SET approved_supervisor_user_id=%s WHERE id=%s', (msg.get('receiver_user_id'), msg.get('topic_id')))
         conn.commit()
+        msg['status'] = status
+        msg['answer'] = answer or None
+        notify_ctx = msg
+    if notify_ctx:
+        _notify_application_update(notify_ctx, act)
     return {'status': 'ok'}
 
 

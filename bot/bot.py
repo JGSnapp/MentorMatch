@@ -635,14 +635,57 @@ class MentorMatchBot:
     async def cb_my_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await self._answer_callback(q)
         uid = context.user_data.get('uid')
-        data = await self._api_get(f'/api/user-topics/{uid}?limit=20') or []
+        if not uid:
+            return await self.cmd_start(update, context)
+        raw = await self._api_get(f'/api/user-topics/{uid}?limit=20') or []
+        topics: List[Dict[str, Any]] = raw if isinstance(raw, list) else []
         lines = ['Мои темы:']
         kb: List[List[InlineKeyboardButton]] = []
-        for t in data:
-            title = (t.get('title') or '–')[:40]
-            kb.append([InlineKeyboardButton(title, callback_data=f'topic_{t.get("id")}')])
-            kb.append([InlineKeyboardButton('👨‍🎓 Подобрать студентов', callback_data=f'match_students_topic_{t.get("id")}')])
-        if not kb:
+        any_topics = False
+        for t in topics:
+            tid = self._parse_positive_int(t.get('id'))
+            if tid is None:
+                continue
+            title_raw = (t.get('title') or '').strip()
+            if not title_raw:
+                title_raw = f'Тема #{tid}'
+            note_parts: List[str] = []
+            if t.get('is_author'):
+                note_parts.append('моя тема')
+            if t.get('is_approved_student'):
+                role_names_val = t.get('approved_role_names') or []
+                if isinstance(role_names_val, list):
+                    role_names = [str(name) for name in role_names_val if name]
+                elif role_names_val:
+                    role_names = [str(role_names_val)]
+                else:
+                    role_names = []
+                if role_names:
+                    display_roles = ', '.join(role_names[:3])
+                    if len(role_names) > 3:
+                        display_roles += '…'
+                    note_parts.append(f'мои роли: {display_roles}')
+                else:
+                    note_parts.append('утверждён(а) на роль')
+            if t.get('is_approved_supervisor'):
+                note_parts.append('я научный руководитель')
+            summary_line = title_raw
+            if note_parts:
+                summary_line += f" ({'; '.join(note_parts)})"
+            lines.append(f'• {summary_line}')
+            button_label = title_raw
+            if t.get('is_author'):
+                button_label = f'⭐ {button_label}'
+            elif t.get('is_approved_supervisor'):
+                button_label = f'🧑‍🏫 {button_label}'
+            elif t.get('is_approved_student'):
+                button_label = f'🎓 {button_label}'
+            button_label = (button_label or '')[:60]
+            kb.append([InlineKeyboardButton(self._fix_text(button_label or f'Тема #{tid}'), callback_data=f'topic_{tid}')])
+            if t.get('is_author') or t.get('is_approved_supervisor'):
+                kb.append([InlineKeyboardButton('👨‍🎓 Подобрать студентов', callback_data=f'match_students_topic_{tid}')])
+            any_topics = True
+        if not any_topics:
             lines.append('— пока нет тем —')
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
