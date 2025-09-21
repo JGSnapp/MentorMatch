@@ -1652,7 +1652,7 @@ def api_get_role(role_id: int):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
-            SELECT r.*, t.title AS topic_title, u.full_name AS author
+            SELECT r.*, t.title AS topic_title, t.author_user_id, u.full_name AS author
             FROM roles r
             JOIN topics t ON t.id = r.topic_id
             JOIN users u ON u.id = t.author_user_id
