@@ -255,11 +255,9 @@ class MentorMatchBot:
         if viewer_is_student:
             if topic_id:
                 kb.append([InlineKeyboardButton('К теме', callback_data=f'topic_{topic_id}')])
-            if viewer_id is not None:
-                has_author = author_id not in (None, '', 0, '0')
-                same_author = self._ids_equal(author_id, viewer_id)
-                if has_author and not same_author and not approved_for_viewer:
-                    kb.append([InlineKeyboardButton('Подать заявку', callback_data=f'apply_role_{rid}')])
+
+            kb.append([InlineKeyboardButton('Подать заявку', callback_data=f'apply_role_{rid}')])
+
             back_callback = context.user_data.get('student_match_back') or 'back_to_main'
             kb.append([InlineKeyboardButton('Назад', callback_data=back_callback)])
         else:
