@@ -1003,9 +1003,27 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 ролей для студента #{sid}:']
+        kb: List[List[InlineKeyboardButton]] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('role_name','–')} — {it.get('topic_title','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К студенту', callback_data=f'student_{sid}')]]
+            rank = it.get('rank')
+            role_name = (it.get('role_name') or '–').strip() or '–'
+            topic_title = (it.get('topic_title') or '–').strip() or '–'
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {role_name} — {topic_title}{reason_suffix}")
+            rid = it.get('role_id')
+            if rid:
+                if role_name and role_name != '–':
+                    btn_title = f"🎭 {role_name[:40]}"
+                elif topic_title and topic_title != '–':
+                    btn_title = f"🎭 Роль из {topic_title[:30]}"
+                else:
+                    btn_title = f"🎭 Роль {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(btn_title), callback_data=f'role_{rid}')])
+        if not kb:
+            lines.append('— подходящих ролей не найдено —')
+        kb.append([InlineKeyboardButton('⬅️ К студенту', callback_data=f'student_{sid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     # Messages (applications)
@@ -2257,9 +2275,24 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 руководителей для темы #{tid}:']
+        kb: List[List[InlineKeyboardButton]] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('full_name','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')]]
+            rank = it.get('rank')
+            full_name = (it.get('full_name') or '–').strip() or '–'
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {full_name}{reason_suffix}")
+            supervisor_id = it.get('user_id')
+            if supervisor_id:
+                if full_name and full_name != '–':
+                    btn_title = f"👨‍🏫 {full_name[:40]}"
+                else:
+                    btn_title = f"👨‍🏫 Руководитель {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(btn_title), callback_data=f'supervisor_{supervisor_id}')])
+        if not kb:
+            lines.append('— подходящих руководителей не найдено —')
+        kb.append([InlineKeyboardButton('⬅️ К теме', callback_data=f'topic_{tid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_match_students_for_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2285,9 +2318,24 @@ class MentorMatchBot:
             return
         items = res.get('items', [])
         lines = [f'Топ‑5 студентов для роли #{rid}:']
+        kb: List[List[InlineKeyboardButton]] = []
         for it in items:
-            lines.append(f"#{it.get('rank')}. {it.get('full_name','–')} — {it.get('reason','')}")
-        kb = [[InlineKeyboardButton('⬅️ К роли', callback_data=f'role_{rid}')]]
+            rank = it.get('rank')
+            full_name = (it.get('full_name') or '–').strip() or '–'
+            reason = (it.get('reason') or '').strip()
+            rank_label = f"#{rank}" if rank else '#?'
+            reason_suffix = f" — {reason}" if reason else ''
+            lines.append(f"{rank_label}. {full_name}{reason_suffix}")
+            student_id = it.get('user_id')
+            if student_id:
+                if full_name and full_name != '–':
+                    btn_title = f"👤 {full_name[:40]}"
+                else:
+                    btn_title = f"👤 Студент {rank_label}"
+                kb.append([InlineKeyboardButton(self._fix_text(btn_title), callback_data=f'student_{student_id}')])
+        if not kb:
+            lines.append('— подходящих студентов не найдено —')
+        kb.append([InlineKeyboardButton('⬅️ К роли', callback_data=f'role_{rid}')])
         await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
 
     async def cb_match_topics_for_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
