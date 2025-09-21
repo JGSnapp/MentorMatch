@@ -59,6 +59,41 @@ class MentorMatchBot:
                     pass
         return InlineKeyboardMarkup(kb)
 
+    def _parse_positive_int(self, value: Any) -> Optional[int]:
+        """Normalize identifiers that may come as str/float/0 into positive ints."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            try:
+                ivalue = int(value)
+            except Exception:
+                return None
+            return ivalue if ivalue > 0 else None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped or stripped.lower() in {'none', 'null', '0'}:
+                return None
+            try:
+                ivalue = int(stripped)
+            except Exception:
+                return None
+            return ivalue if ivalue > 0 else None
+        return None
+
+    def _ids_equal(self, left: Any, right: Any) -> bool:
+        if left is None or right is None:
+            return False
+        left_int = self._parse_positive_int(left)
+        right_int = self._parse_positive_int(right)
+        if left_int is not None and right_int is not None:
+            return left_int == right_int
+        try:
+            return str(left).strip() == str(right).strip()
+        except Exception:
+            return False
+
     async def _answer_callback(self, q, **kwargs) -> None:
         """Safely acknowledge a callback query without crashing on API timeouts."""
         if not q:
@@ -185,19 +220,11 @@ class MentorMatchBot:
         viewer_id = context.user_data.get('uid')
         viewer_role_name = (context.user_data.get('role') or '').lower()
         author_id = r.get('author_user_id')
-        approved_student_id = r.get('approved_student_user_id')
-        approved_for_viewer = False
-        if approved_student_id is not None and viewer_id is not None:
-            try:
-                approved_for_viewer = int(approved_student_id) == int(viewer_id)
-            except Exception:
-                approved_for_viewer = approved_student_id == viewer_id
+        approved_student_id = self._parse_positive_int(r.get('approved_student_user_id'))
+        approved_for_viewer = self._ids_equal(approved_student_id, viewer_id)
         can_edit = self._is_admin(update)
-        if not can_edit and viewer_id is not None and author_id is not None:
-            try:
-                can_edit = int(viewer_id) == int(author_id)
-            except Exception:
-                can_edit = viewer_id == author_id
+        if not can_edit and self._ids_equal(author_id, viewer_id):
+            can_edit = True
         lines: List[str] = [
             f"Роль: {r.get('name') or ''}",
             f"Тема: {r.get('topic_title') or ''}",
@@ -206,7 +233,7 @@ class MentorMatchBot:
             f"Вместимость: {r.get('capacity') or ''}",
             f"ID: {r.get('id')}",
         ]
-        if approved_student_id:
+        if approved_student_id is not None:
             lines.append(f"Утверждённый студент: #{approved_student_id}")
             if approved_for_viewer:
                 lines.append('Вы утверждены на эту роль.')
@@ -227,19 +254,10 @@ class MentorMatchBot:
             kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
         can_apply = False
         if viewer_role_name == 'student' and viewer_id is not None:
-            same_author = False
-            if author_id is not None:
-                try:
-                    same_author = int(author_id) == int(viewer_id)
-                except Exception:
-                    same_author = author_id == viewer_id
-            allowed_by_status = True
-            if approved_student_id is not None:
-                allowed_by_status = approved_for_viewer
-            has_author = author_id not in (None, '')
-            can_apply = has_author and not same_author and allowed_by_status
-        if can_apply and approved_for_viewer:
-            can_apply = False
+            has_author = author_id not in (None, '', 0, '0')
+            same_author = self._ids_equal(author_id, viewer_id)
+            if has_author and not same_author and not approved_for_viewer:
+                can_apply = True
         if can_apply:
             kb.append([InlineKeyboardButton('📨 Подать заявку', callback_data=f'apply_role_{rid}')])
         kb.append([InlineKeyboardButton('🧠 Подобрать студентов', callback_data=f'match_role_{rid}')])
@@ -267,25 +285,16 @@ class MentorMatchBot:
             return
         author_id = role.get('author_user_id')
         topic_id = role.get('topic_id')
-        if author_id in (None, ''):
+        if author_id in (None, '', 0, '0'):
             await q.edit_message_text(self._fix_text('Не удалось определить получателя заявки.'))
             return
-        try:
-            same_author = int(author_id) == int(uid)
-        except Exception:
-            same_author = author_id == uid
-        if same_author:
+        if self._ids_equal(author_id, uid):
             await q.edit_message_text(self._fix_text('Нельзя откликаться на собственную роль.'))
             return
-        approved_student_id = role.get('approved_student_user_id')
-        if approved_student_id is not None:
-            try:
-                already_taken = int(approved_student_id) != int(uid)
-            except Exception:
-                already_taken = approved_student_id != uid
-            if already_taken:
-                await q.edit_message_text(self._fix_text('Роль уже занята другим студентом.'))
-                return
+        approved_student_id = self._parse_positive_int(role.get('approved_student_user_id'))
+        if approved_student_id is not None and not self._ids_equal(approved_student_id, uid):
+            await q.edit_message_text(self._fix_text('Роль уже занята другим студентом.'))
+            return
         role_name = role.get('name') or f'#{rid}'
         topic_title_raw = role.get('topic_title')
         topic_title = topic_title_raw or (f'#{topic_id}' if topic_id not in (None, '') else None)
