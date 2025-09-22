@@ -65,7 +65,7 @@ def _display_name(name: Optional[str], fallback_id: Optional[Any]) -> str:
 def _send_telegram_notification(telegram_id: Optional[Any], text: str, *, button_text: Optional[str] = None, callback_data: Optional[str] = None) -> bool:
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
-        logger.debug('Skipping telegram notification: TELEGRAM_BOT_TOKEN not set')
+        logger.warning('Skipping telegram notification: TELEGRAM_BOT_TOKEN not set')
         return False
     if telegram_id in (None, '', 0):
         return False
