@@ -19,7 +19,7 @@ services:
         - SPREADSHEET_ID=${SPREADSHEET_ID}
         - SERVICE_ACCOUNT_FILE=${SERVICE_ACCOUNT_FILE}
         - SERVER_URL=${SERVER_URL}
-        - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+        - BOT_API_URL=${BOT_API_URL:-http://bot:5000}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
       volumes:
         - ./server:/app
