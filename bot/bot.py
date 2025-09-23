@@ -1,9 +1,11 @@
-﻿import os
+import json
+import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 import aiohttp
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from telegram.error import TelegramError, TimedOut
@@ -28,7 +30,23 @@ class MentorMatchBot:
         self.admin_ids: set[int] = set()
         self.admin_usernames: set[str] = set()  # lower-case without @
         self._load_admins()
+        self.http_host = os.getenv('BOT_HTTP_HOST', '0.0.0.0')
+        try:
+            self.http_port = int(os.getenv('BOT_HTTP_PORT', '5000'))
+        except Exception:
+            self.http_port = 5000
+        self._http_app = web.Application()
+        self._http_app.add_routes(
+            [
+                web.get('/healthz', self._handle_healthcheck),
+                web.post('/notify', self._handle_notify),
+            ]
+        )
+        self._http_runner: Optional[web.AppRunner] = None
+        self._http_site: Optional[web.BaseSite] = None
         self.app = Application.builder().token(token).build()
+        self.app.post_init = self._post_init
+        self.app.post_shutdown = self._post_shutdown
         self._setup_handlers()
 
     # --- Text/keyboard fixing helpers ---
@@ -59,6 +77,59 @@ class MentorMatchBot:
                     pass
         return InlineKeyboardMarkup(kb)
 
+    def _build_reply_markup(self, payload: Dict[str, Any]) -> Optional[InlineKeyboardMarkup]:
+        keyboard: List[List[InlineKeyboardButton]] = []
+        markup_payload = payload.get('reply_markup')
+        if isinstance(markup_payload, str):
+            try:
+                markup_payload = json.loads(markup_payload)
+            except Exception:
+                logger.warning('Invalid reply_markup payload (not JSON): %s', markup_payload)
+                markup_payload = None
+        if isinstance(markup_payload, InlineKeyboardMarkup):
+            return markup_payload
+        if isinstance(markup_payload, dict):
+            raw_keyboard = markup_payload.get('inline_keyboard')
+            if isinstance(raw_keyboard, list):
+                for row in raw_keyboard:
+                    if not isinstance(row, list):
+                        continue
+                    row_buttons: List[InlineKeyboardButton] = []
+                    for btn in row:
+                        if not isinstance(btn, dict):
+                            continue
+                        text_val = btn.get('text')
+                        if text_val is None:
+                            continue
+                        callback_data = btn.get('callback_data')
+                        url = btn.get('url')
+                        try:
+                            if callback_data is not None:
+                                row_buttons.append(
+                                    InlineKeyboardButton(str(text_val), callback_data=str(callback_data))
+                                )
+                            elif url is not None:
+                                row_buttons.append(InlineKeyboardButton(str(text_val), url=str(url)))
+                        except Exception:
+                            continue
+                    if row_buttons:
+                        keyboard.append(row_buttons)
+        if not keyboard and payload.get('button_text') and payload.get('callback_data'):
+            try:
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            str(payload.get('button_text')),
+                            callback_data=str(payload.get('callback_data')),
+                        )
+                    ]
+                ]
+            except Exception:
+                keyboard = []
+        if keyboard:
+            return self._mk(keyboard)
+        return None
+
     def _parse_positive_int(self, value: Any) -> Optional[int]:
         """Normalize identifiers that may come as str/float/0 into positive ints."""
         if value is None:
@@ -81,6 +152,16 @@ class MentorMatchBot:
                 return None
             return ivalue if ivalue > 0 else None
         return None
+
+    def _truthy_flag(self, value: Any, *, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        try:
+            return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+        except Exception:
+            return default
 
     def _ids_equal(self, left: Any, right: Any) -> bool:
         if left is None or right is None:
@@ -142,6 +223,87 @@ class MentorMatchBot:
             'научный руководитель': 'supervisor',
         }
         return mapping.get(text.strip().lower())
+
+    async def _post_init(self, _: Application) -> None:
+        try:
+            await self._start_http_server()
+        except Exception:
+            logger.exception('Не удалось запустить внутренний HTTP-сервер уведомлений')
+
+    async def _post_shutdown(self, _: Application) -> None:
+        try:
+            await self._stop_http_server()
+        except Exception:
+            logger.exception('Ошибка при остановке внутреннего HTTP-сервера уведомлений')
+
+    async def _start_http_server(self) -> None:
+        if self._http_runner is not None:
+            return
+        self._http_runner = web.AppRunner(self._http_app)
+        await self._http_runner.setup()
+        self._http_site = web.TCPSite(self._http_runner, host=self.http_host, port=self.http_port)
+        await self._http_site.start()
+        logger.info('Bot HTTP API listening on %s:%s', self.http_host, self.http_port)
+
+    async def _stop_http_server(self) -> None:
+        if self._http_site is not None:
+            await self._http_site.stop()
+            self._http_site = None
+        if self._http_runner is not None:
+            await self._http_runner.cleanup()
+            self._http_runner = None
+            logger.info('Bot HTTP API stopped')
+
+    async def _handle_healthcheck(self, _: web.Request) -> web.Response:
+        return web.json_response({'status': 'ok'})
+
+    async def _handle_notify(self, request: web.Request) -> web.Response:
+        payload: Dict[str, Any] = {}
+        if request.can_read_body:
+            try:
+                if request.content_type and 'json' in request.content_type:
+                    payload = await request.json()
+                else:
+                    payload = dict(await request.post())
+            except Exception as exc:
+                logger.warning('Failed to parse notify payload: %s', exc)
+                payload = {}
+        if not payload:
+            payload = dict(request.query)
+        chat_id_raw = payload.get('chat_id') or payload.get('telegram_id')
+        chat_id = self._parse_positive_int(chat_id_raw)
+        if chat_id is None:
+            return web.json_response({'status': 'error', 'message': 'chat_id is required'}, status=400)
+        text_val = payload.get('text')
+        if text_val is None:
+            return web.json_response({'status': 'error', 'message': 'text is required'}, status=400)
+        text_raw = text_val if isinstance(text_val, str) else str(text_val)
+        if not str(text_raw).strip():
+            return web.json_response({'status': 'error', 'message': 'text is required'}, status=400)
+        reply_markup = self._build_reply_markup(payload)
+        disable_preview = self._truthy_flag(payload.get('disable_web_page_preview'), default=True)
+        parse_mode = payload.get('parse_mode')
+        message_kwargs: Dict[str, Any] = {
+            'chat_id': chat_id,
+            'text': self._fix_text(text_raw),
+            'disable_web_page_preview': disable_preview,
+        }
+        if reply_markup is not None:
+            message_kwargs['reply_markup'] = reply_markup
+        if parse_mode:
+            message_kwargs['parse_mode'] = str(parse_mode)
+        try:
+            await self.app.bot.send_message(**message_kwargs)
+        except TimedOut:
+            logger.warning('Timeout while sending notification to %s', chat_id)
+            return web.json_response({'status': 'error', 'message': 'timeout'}, status=504)
+        except TelegramError as exc:
+            logger.warning('Telegram error sending notification to %s: %s', chat_id, exc)
+            return web.json_response({'status': 'error', 'message': str(exc)}, status=502)
+        except Exception:
+            logger.exception('Unexpected error sending notification to %s', chat_id)
+            return web.json_response({'status': 'error', 'message': 'internal error'}, status=500)
+        return web.json_response({'status': 'ok'})
 
     def run(self) -> None:
         self.app.run_polling()

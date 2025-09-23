@@ -27,6 +27,9 @@ def main():
         
         print("🤖 Запуск MentorMatch Telegram Bot...")
         print("📱 Бот будет доступен в Telegram")
+        host = os.getenv('BOT_HTTP_HOST', '0.0.0.0')
+        port = os.getenv('BOT_HTTP_PORT', '5000')
+        print(f"🌐 Внутренний HTTP API: http://{host}:{port}/notify")
         print("🔄 Для остановки нажмите Ctrl+C")
         print("-" * 50)
         

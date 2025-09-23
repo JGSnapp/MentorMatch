@@ -4,6 +4,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from urllib import request as urllib_request
+from urllib import error as urllib_error
 
 from fastapi import FastAPI, Form, Query, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
@@ -63,10 +64,16 @@ def _display_name(name: Optional[str], fallback_id: Optional[Any]) -> str:
 
 
 def _send_telegram_notification(telegram_id: Optional[Any], text: str, *, button_text: Optional[str] = None, callback_data: Optional[str] = None) -> bool:
-    token = os.getenv('TELEGRAM_BOT_TOKEN')
-    if not token:
-        logger.warning('Skipping telegram notification: TELEGRAM_BOT_TOKEN not set')
+    base_url = (
+        os.getenv('BOT_API_URL')
+        or os.getenv('BOT_INTERNAL_URL')
+        or os.getenv('BOT_BASE_URL')
+        or 'http://bot:5000'
+    )
+    if not base_url or not str(base_url).strip():
+        logger.warning('Skipping telegram notification: BOT_API_URL not configured')
         return False
+    endpoint = str(base_url).rstrip('/') + '/notify'
     if telegram_id in (None, '', 0):
         return False
     try:
@@ -91,15 +98,27 @@ def _send_telegram_notification(telegram_id: Optional[Any], text: str, *, button
             ]
         }
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    url = f'https://api.telegram.org/bot{token}/sendMessage'
-    req = urllib_request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+    req = urllib_request.Request(endpoint, data=data, headers={'Content-Type': 'application/json'})
     try:
         with urllib_request.urlopen(req, timeout=10) as resp:
-            resp.read()
-        return True
+            status = getattr(resp, 'status', None) or resp.getcode()
+            if 200 <= status < 300:
+                resp.read()
+                return True
+            logger.warning('Bot notification endpoint %s returned HTTP %s', endpoint, status)
+            return False
+    except urllib_error.HTTPError as exc:
+        logger.warning(
+            'Bot notification failed with HTTP %s for chat %s: %s',
+            getattr(exc, 'code', 'unknown'),
+            chat_id,
+            exc,
+        )
+    except urllib_error.URLError as exc:
+        logger.warning('Bot notification request error for chat %s: %s', chat_id, exc)
     except Exception as exc:
-        logger.warning('Failed to send Telegram notification to %s: %s', chat_id, exc)
-        return False
+        logger.warning('Unexpected bot notification error for chat %s: %s', chat_id, exc)
+    return False
 
 
 
@@ -1970,6 +1989,18 @@ def api_messages_send(
         role_id_val = parse_optional_int(role_id)
         if sender_role == 'student' and role_id_val is None:
             return {'status': 'error', 'message': 'role_id is required for student applications'}
+        if sender_role == 'student':
+            cur.execute(
+                '''
+                SELECT 1
+                FROM roles
+                WHERE topic_id = %s AND approved_student_user_id = %s
+                LIMIT 1
+                ''',
+                (int(topic_id), sender_user_id),
+            )
+            if cur.fetchone():
+                return {'status': 'error', 'message': 'Вы уже утверждены на роль в этой теме.'}
         if role_id_val is not None:
             cur.execute('SELECT 1 FROM roles WHERE id=%s AND topic_id=%s', (role_id_val, int(topic_id)))
             if not cur.fetchone():
