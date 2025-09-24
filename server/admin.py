@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from parse_gform import fetch_normalized_rows
 from media_store import persist_media_from_url
 from utils import parse_optional_int
+from sheet_pairs import sync_roles_sheet
 
 def _normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
     if not raw:
@@ -58,44 +59,115 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
     @router.get('/', response_class=HTMLResponse)
     def index(request: Request, kind: str = 'topics', offset: int = 0, msg: Optional[str] = None):
         items: List[Dict[str, Any]] = []
-        with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            if kind == 'students':
-                cur.execute(
+        role_topics: List[Dict[str, Any]] = []
+        all_students: List[Dict[str, Any]] = []
+        all_supervisors: List[Dict[str, Any]] = []
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                if kind == 'students':
+                    cur.execute(
+                        '''
+                        SELECT u.id, u.full_name, u.username, u.email, u.created_at,
+                               sp.program, sp.skills, sp.interests
+                        FROM users u
+                        LEFT JOIN student_profiles sp ON sp.user_id = u.id
+                        WHERE u.role = 'student'
+                        ORDER BY u.created_at DESC
+                        OFFSET %s LIMIT 10
+                        ''', (max(0, offset),),
+                    )
+                    items = cur.fetchall()
+                elif kind == 'supervisors':
+                    cur.execute(
+                        '''
+                        SELECT u.id, u.full_name, u.username, u.email, u.created_at,
+                               sup.position, sup.degree, sup.capacity, sup.interests
+                        FROM users u
+                        LEFT JOIN supervisor_profiles sup ON sup.user_id = u.id
+                        WHERE u.role = 'supervisor'
+                        ORDER BY u.created_at DESC
+                        OFFSET %s LIMIT 10
+                        ''', (max(0, offset),),
+                    )
+                    items = cur.fetchall()
+                else:
+                    cur.execute(
+                        '''
+                        SELECT t.id, t.title, t.seeking_role, t.direction, t.created_at, u.full_name AS author
+                        FROM topics t
+                        JOIN users u ON u.id = t.author_user_id
+                        ORDER BY t.created_at DESC
+                        OFFSET %s LIMIT 10
+                        ''', (max(0, offset),),
+                    )
+                    items = cur.fetchall()
+
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur_roles:
+                cur_roles.execute(
                     '''
-                    SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                           sp.program, sp.skills, sp.interests
-                    FROM users u
-                    LEFT JOIN student_profiles sp ON sp.user_id = u.id
-                    WHERE u.role = 'student'
-                    ORDER BY u.created_at DESC
-                    OFFSET %s LIMIT 10
-                    ''', (max(0, offset),),
-                )
-                items = cur.fetchall()
-            elif kind == 'supervisors':
-                cur.execute(
+                    SELECT r.id AS role_id,
+                           r.name AS role_name,
+                           r.topic_id,
+                           r.approved_student_user_id,
+                           stu.full_name AS approved_student_name,
+                           t.title AS topic_title,
+                           t.author_user_id,
+                           author.full_name AS author_name,
+                           t.approved_supervisor_user_id,
+                           sup.full_name AS approved_supervisor_name
+                    FROM roles r
+                    JOIN topics t ON t.id = r.topic_id
+                    JOIN users author ON author.id = t.author_user_id
+                    LEFT JOIN users stu ON stu.id = r.approved_student_user_id
+                    LEFT JOIN users sup ON sup.id = t.approved_supervisor_user_id
+                    ORDER BY t.created_at DESC, r.id ASC
                     '''
-                    SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                           sup.position, sup.degree, sup.capacity, sup.interests
-                    FROM users u
-                    LEFT JOIN supervisor_profiles sup ON sup.user_id = u.id
-                    WHERE u.role = 'supervisor'
-                    ORDER BY u.created_at DESC
-                    OFFSET %s LIMIT 10
-                    ''', (max(0, offset),),
                 )
-                items = cur.fetchall()
-            else:
-                cur.execute(
-                    '''
-                    SELECT t.id, t.title, t.seeking_role, t.direction, t.created_at, u.full_name AS author
-                    FROM topics t
-                    JOIN users u ON u.id = t.author_user_id
-                    ORDER BY t.created_at DESC
-                    OFFSET %s LIMIT 10
-                    ''', (max(0, offset),),
+                rows = cur_roles.fetchall()
+                if rows:
+                    topic_map: Dict[int, Dict[str, Any]] = {}
+                    topic_order: List[int] = []
+                    for raw in rows:
+                        row = dict(raw)
+                        topic_id = row['topic_id']
+                        topic = topic_map.get(topic_id)
+                        if not topic:
+                            topic = {
+                                'id': topic_id,
+                                'title': row.get('topic_title'),
+                                'author_user_id': row.get('author_user_id'),
+                                'author_name': row.get('author_name'),
+                                'approved_supervisor_user_id': row.get('approved_supervisor_user_id'),
+                                'approved_supervisor_name': row.get('approved_supervisor_name'),
+                                'supervisor_locked': (
+                                    row.get('approved_supervisor_user_id') is not None
+                                    and row.get('approved_supervisor_user_id') == row.get('author_user_id')
+                                ),
+                                'roles': [],
+                            }
+                            topic_map[topic_id] = topic
+                            topic_order.append(topic_id)
+                        topic['roles'].append(
+                            {
+                                'id': row.get('role_id'),
+                                'name': row.get('role_name'),
+                                'approved_student_user_id': row.get('approved_student_user_id'),
+                                'approved_student_name': row.get('approved_student_name'),
+                            }
+                        )
+                    role_topics = [topic_map[tid] for tid in topic_order]
+
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur_students:
+                cur_students.execute(
+                    "SELECT id, full_name FROM users WHERE role='student' ORDER BY full_name ASC"
                 )
-                items = cur.fetchall()
+                all_students = [dict(r) for r in cur_students.fetchall()]
+
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur_supervisors:
+                cur_supervisors.execute(
+                    "SELECT id, full_name FROM users WHERE role='supervisor' ORDER BY full_name ASC"
+                )
+                all_supervisors = [dict(r) for r in cur_supervisors.fetchall()]
 
         return templates.TemplateResponse(
             'index.html',
@@ -106,9 +178,86 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 'offset': offset,
                 'items': items,
                 'env_spreadsheet_id': os.getenv('SPREADSHEET_ID', ''),
-                'env_pairs_spreadsheet_id': os.getenv('PAIRS_SPREADSHEET_ID', ''),
+                'role_topics': role_topics,
+                'all_students': all_students,
+                'all_supervisors': all_supervisors,
             },
         )
+
+    @router.post('/save-approvals')
+    async def save_approvals(request: Request):
+        form = await request.form()
+        role_updates: Dict[int, Optional[int]] = {}
+        topic_updates: Dict[int, Optional[int]] = {}
+        for key, value in form.multi_items():
+            if key.startswith('role_student_'):
+                try:
+                    role_id = int(key[len('role_student_'):])
+                except ValueError:
+                    continue
+                role_updates[role_id] = parse_optional_int(value)
+            elif key.startswith('topic_supervisor_'):
+                try:
+                    topic_id = int(key[len('topic_supervisor_'):])
+                except ValueError:
+                    continue
+                topic_updates[topic_id] = parse_optional_int(value)
+
+        updated_roles = 0
+        updated_topics = 0
+        if role_updates or topic_updates:
+            with get_conn() as conn, conn.cursor() as cur:
+                for role_id, student_id in role_updates.items():
+                    cur.execute('SELECT approved_student_user_id FROM roles WHERE id=%s', (role_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+                    current_student_id = row[0]
+                    if current_student_id == student_id:
+                        continue
+                    if student_id is not None:
+                        cur.execute("SELECT 1 FROM users WHERE id=%s AND role='student'", (student_id,))
+                        if not cur.fetchone():
+                            continue
+                    cur.execute(
+                        'UPDATE roles SET approved_student_user_id=%s, updated_at=now() WHERE id=%s',
+                        (student_id, role_id),
+                    )
+                    updated_roles += 1
+
+                for topic_id, supervisor_id in topic_updates.items():
+                    cur.execute('SELECT approved_supervisor_user_id, author_user_id FROM topics WHERE id=%s', (topic_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+                    current_supervisor_id, author_id = row
+                    if current_supervisor_id == author_id and supervisor_id != author_id:
+                        continue
+                    if supervisor_id is not None:
+                        cur.execute("SELECT 1 FROM users WHERE id=%s AND role='supervisor'", (supervisor_id,))
+                        if not cur.fetchone():
+                            continue
+                    if current_supervisor_id == supervisor_id:
+                        continue
+                    cur.execute(
+                        'UPDATE topics SET approved_supervisor_user_id=%s, updated_at=now() WHERE id=%s',
+                        (supervisor_id, topic_id),
+                    )
+                    updated_topics += 1
+                conn.commit()
+
+        sheet_synced = sync_roles_sheet(get_conn)
+        msg_parts = [
+            f'обновлено ролей: {updated_roles}',
+            f'обновлено руководителей: {updated_topics}',
+        ]
+        if sheet_synced:
+            msg_parts.append('данные выгружены в Google Sheets')
+        else:
+            msg_parts.append('не удалось обновить Google Sheets (проверьте настройки)')
+        message = '; '.join(msg_parts)
+        quoted = urllib.parse.quote(message)
+        return RedirectResponse(url=f'/?msg={quoted}&kind=topics', status_code=303)
 
     # --- Profiles (HTML views) ---
     @router.get('/user/{user_id}')
@@ -363,6 +512,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     ),
                 )
                 conn.commit()
+            sync_roles_sheet(get_conn)
             return RedirectResponse(url=f'/topic/{topic_id}', status_code=303)
         except Exception as e:
             return RedirectResponse(url=f'/topic/{topic_id}?msg=Ошибка добавления роли: {type(e).__name__}', status_code=303)
@@ -633,24 +783,11 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
 
  
 
+            sync_roles_sheet(get_conn)
             return RedirectResponse(url=f'/?msg=Импорт: users+{inserted_users}, profiles~{upserted_profiles}, topics+{inserted_topics}&kind=topics', status_code=303)
         except Exception as e:
             msg = f"Ошибка импорта: {type(e).__name__}: {e}" if str(e) else f"Ошибка импорта: {type(e).__name__}"
             return RedirectResponse(url=f'/?msg={msg}&kind=topics', status_code=303)
-
-    @router.post('/export-pairs')
-    def export_pairs(request: Request, pairs_spreadsheet_id: Optional[str] = Form(None)):
-        from sheet_pairs import export_pairs_from_db
-        sid = pairs_spreadsheet_id or os.getenv('PAIRS_SPREADSHEET_ID')
-        if not sid:
-            return RedirectResponse(url='/?msg=Не указан PAIRS_SPREADSHEET_ID&kind=topics', status_code=303)
-        service_account_file = os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json')
-        try:
-            with get_conn() as conn:
-                n = export_pairs_from_db(conn, sid, service_account_file)
-            return RedirectResponse(url=f'/?msg=Экспортированo строк: {n}&kind=topics', status_code=303)
-        except Exception as e:
-            return RedirectResponse(url=f'/?msg=Ошибка экспорта: {type(e).__name__}: {e}&kind=topics', status_code=303)
 
     @router.post('/add-supervisor')
     def add_supervisor(request: Request,
@@ -970,15 +1107,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 VALUES (%s, %s, %s, %s, %s, now(), now())
                 ''', (topic_id, name.strip(), (description or None), (required_skills or None), capacity_val),
             )
-        # Best-effort export to pairs sheet
-        try:
-            from sheet_pairs import export_pairs_from_db
-            sid = os.getenv('PAIRS_SPREADSHEET_ID')
-            if sid:
-                with get_conn() as c2:
-                    export_pairs_from_db(c2, sid, os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
-        except Exception:
-            pass
+        sync_roles_sheet(get_conn)
         return RedirectResponse(url=f'/topic/{topic_id}', status_code=303)
 
     # Removed duplicate '/match-role' HTML redirect to avoid conflict with JSON API in main.py
