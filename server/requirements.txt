@@ -6,6 +6,7 @@ gspread
 google-auth
 Jinja2
 openai
+pgvector
 python-multipart>=0.0.9
 pypdf>=4.2.0
 python-docx>=0.8.11

@@ -12,12 +12,12 @@
 - username: text — Telegram (полная ссылка вида https://t.me/<username>)
 - is_confirmed: boolean — подтверждён ли пользователь в Telegram
 - role: varchar(20), NOT NULL — 'student' | 'supervisor' | 'admin'
-- embeddings: text
+- embeddings: vector(1536) — семантическое представление профиля (pgvector)
 - consent_personal: boolean — согласие на обработку персональных данных
 - consent_private: boolean — согласие на обработку закрытых данных (если есть)
 - created_at, updated_at: timestamptz, NOT NULL, DEFAULT now()
 
-Индексы: idx_users_role(role)
+Индексы: idx_users_role(role), idx_users_embeddings USING ivfflat (embeddings vector_cosine_ops)
 
 ## student_profiles — профиль студента (1:1 к users)
 - user_id: bigint, PK, FK → users.id (ON DELETE CASCADE)
@@ -79,13 +79,14 @@
 - required_skills: text — подтягиваем известные skills студента при создании его темы
 - direction: smallint — направление (9/11/45), опционально
 - seeking_role: varchar(20), NOT NULL — 'student' | 'supervisor' (кого ищет автор темы)
-- embeddings: text
+- embeddings: vector(1536) — семантическое представление темы (pgvector)
 - cover_media_id: bigint, FK → media_files.id (ON DELETE SET NULL)
 - approved_supervisor_user_id: bigint, FK → users.id (утверждённый руководитель)
 - is_active: boolean, NOT NULL, DEFAULT true
 - created_at, updated_at: timestamptz, NOT NULL, DEFAULT now()
 
-Индексы: idx_topics_author, idx_topics_seeking_role, idx_topics_active, idx_topics_direction
+Индексы: idx_topics_author, idx_topics_seeking_role, idx_topics_active, idx_topics_direction,
+idx_topics_embeddings USING ivfflat (embeddings vector_cosine_ops)
 
 ## roles — роли внутри темы
 - id: bigserial, PK
@@ -94,10 +95,11 @@
 - description: text — описание роли
 - required_skills: text — требования к роли
 - capacity: int — сколько людей нужно на эту роль (опционально)
+- embeddings: vector(1536) — семантическое представление роли (pgvector)
 - approved_student_user_id: bigint, FK → users.id (утверждённый студент)
 - created_at, updated_at
 
-Индексы: idx_roles_topic(topic_id)
+Индексы: idx_roles_topic(topic_id), idx_roles_embeddings USING ivfflat (embeddings vector_cosine_ops)
 
 ## role_candidates — кандидаты под роль (ранжирование)
 - role_id: bigint, FK → roles.id (ON DELETE CASCADE)
