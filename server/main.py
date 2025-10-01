@@ -14,6 +14,7 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from media_store import persist_media_from_url, MEDIA_ROOT
 from utils import parse_optional_int, normalize_optional_str, resolve_service_account_path
+from embedding_utils import refresh_role_embedding, refresh_topic_embedding, refresh_user_embedding
 
 from parse_gform import fetch_normalized_rows, fetch_supervisor_rows
 from matching import handle_match, handle_match_student, handle_match_supervisor_user
@@ -770,6 +771,7 @@ def api_self_register(
             cur.execute("INSERT INTO student_profiles(user_id) VALUES (%s)", (uid,))
         else:
             cur.execute("INSERT INTO supervisor_profiles(user_id) VALUES (%s)", (uid,))
+        refresh_user_embedding(conn, uid)
         conn.commit()
     return {'status': 'ok', 'user_id': uid, 'role': r}
 
@@ -865,6 +867,7 @@ def api_update_student_profile(
                     workplace_val,
                 ),
             )
+        refresh_user_embedding(conn, user_id)
         conn.commit()
     return {'status': 'ok'}
 
@@ -937,6 +940,7 @@ def api_update_supervisor_profile(
                     requirements_val,
                 ),
             )
+        refresh_user_embedding(conn, user_id)
         conn.commit()
     return {'status': 'ok'}
 
@@ -976,6 +980,7 @@ def api_add_topic(
             ''', (author_id_val, title_clean, description_val, expected_val, required_val, direction_val, seeking_role),
         )
         tid = cur.fetchone()[0]
+        refresh_topic_embedding(conn, tid)
         conn.commit()
     return {'status': 'ok', 'topic_id': tid}
 
@@ -1018,6 +1023,7 @@ def api_add_role(
             ''', (topic_id, name_clean, description_val, required_val, capacity_val),
         )
         rid = cur.fetchone()[0]
+        refresh_role_embedding(conn, rid)
         conn.commit()
         logger.info(
             'api_add_role inserted role_id=%s for topic=%s (capacity=%s)',
@@ -1115,6 +1121,7 @@ def api_update_topic(
                 topic_id,
             ),
         )
+        refresh_topic_embedding(conn, topic_id, cascade_roles=True)
         conn.commit()
     return {'status': 'ok', 'topic_id': topic_id}
 
@@ -1176,6 +1183,7 @@ def api_update_role(
                 role_id,
             ),
         )
+        refresh_role_embedding(conn, role_id)
         conn.commit()
     return {'status': 'ok', 'topic_id': row['topic_id']}
 
@@ -1362,6 +1370,7 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                             pass
                         raise RuntimeError(f"row {idx}: {type(te).__name__}: {te}")
                 inserted_profiles += 1
+                refresh_user_embedding(conn, user_id)
 
                 # Create student's own topic if provided
                 topic = r.get('topic')
@@ -1385,6 +1394,7 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                             INSERT INTO topics(author_user_id, title, description, expected_outcomes,
                                                required_skills, seeking_role, is_active, created_at, updated_at)
                             VALUES (%s, %s, %s, %s, %s, 'supervisor', TRUE, now(), now())
+                            RETURNING id
                             ''', (
                                 user_id,
                                 title,
@@ -1393,6 +1403,8 @@ def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] 
                                 skills_have,
                             ),
                         )
+                        new_topic_id = cur.fetchone()[0]
+                        refresh_topic_embedding(conn, new_topic_id)
                         inserted_topics += 1
 
         return {
@@ -1594,6 +1606,7 @@ def api_import_supervisors(spreadsheet_id: str = Form(...), sheet_name: Optional
                         (user_id, None, None, None, r.get('area') or None, r.get('extra_info') or None),
                     )
                 upserted_profiles += 1
+                refresh_user_embedding(conn, user_id)
 
                 # Extract and insert supervisor's topics (with direction when available)
                 def _insert_from_text(txt: Optional[str], direction: Optional[int]):
@@ -1617,6 +1630,7 @@ def api_import_supervisors(spreadsheet_id: str = Form(...), sheet_name: Optional
                             INSERT INTO topics(author_user_id, title, description, expected_outcomes,
                                                required_skills, direction, seeking_role, is_active, created_at, updated_at)
                             VALUES (%s, %s, %s, %s, %s, %s, 'student', TRUE, now(), now())
+                            RETURNING id
                             """,
                             (
                                 user_id,
@@ -1627,6 +1641,8 @@ def api_import_supervisors(spreadsheet_id: str = Form(...), sheet_name: Optional
                                 direction,
                             ),
                         )
+                        new_topic_id = cur.fetchone()[0]
+                        refresh_topic_embedding(conn, new_topic_id)
                         inserted_topics += 1
 
                 # Try per-direction fields first
