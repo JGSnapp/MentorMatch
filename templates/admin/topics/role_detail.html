@@ -1,0 +1,79 @@
+{% extends 'admin/base.html' %}
+{% block title %}Роль #{{ role.id }} — MentorMatch{% endblock %}
+{% block page_title %}{{ role.name or ('Роль #' ~ role.id) }}{% endblock %}
+{% block page_description %}Карточка роли, закрепления и кандидаты{% endblock %}
+{% block header_actions %}
+  <a class="btn btn--ghost" href="/topic/{{ role.topic_id }}">К теме</a>
+  <form class="form-inline" method="post" action="/do-match-role">
+    <input type="hidden" name="role_id" value="{{ role.id }}" />
+    <button class="btn btn--secondary" type="submit">Подобрать студентов</button>
+  </form>
+{% endblock %}
+
+{% block content %}
+<section class="section">
+  <article class="card">
+    <h2 class="card__title">Основная информация</h2>
+    <div class="properties">
+      <div class="properties__item"><span class="properties__label">ID</span><div class="properties__value">#{{ role.id }}</div></div>
+      <div class="properties__item"><span class="properties__label">Тема</span><div class="properties__value">{{ role.topic_title }}</div></div>
+      <div class="properties__item"><span class="properties__label">Автор</span><div class="properties__value">{{ role.author }}</div></div>
+      <div class="properties__item"><span class="properties__label">Описание</span><div class="properties__value">{{ role.description or '-' }}</div></div>
+      <div class="properties__item"><span class="properties__label">Навыки</span><div class="properties__value">{{ role.required_skills or '-' }}</div></div>
+      <div class="properties__item"><span class="properties__label">Вместимость</span><div class="properties__value">{{ role.capacity or '-' }}</div></div>
+      <div class="properties__item">
+        <span class="properties__label">Утверждённый студент</span>
+        <div class="properties__value">
+          {% if role.approved_student_user_id %}
+            <a href="/user/{{ role.approved_student_user_id }}">#{{ role.approved_student_user_id }}</a>
+            <form class="form-inline" method="post" action="/api/roles/{{ role.id }}/clear-approved">
+              <input type="hidden" name="by_user_id" value="{{ role.author_user_id }}" />
+              <button class="btn btn--ghost" type="submit">Снять утверждение</button>
+            </form>
+          {% else %}-{% endif %}
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <article class="card" id="role-candidates">
+    <h2 class="card__title">Кандидаты</h2>
+    <p class="card__subtitle">Топ-10 студентов, отсортированных по рейтингу.</p>
+    {% if candidates %}
+      <table class="table">
+        <thead><tr><th>Место</th><th>Студент</th><th>Username</th><th>Оценка</th><th>Действия</th></tr></thead>
+        <tbody>
+          {% for c in candidates %}
+            <tr>
+              <td>{{ c.rank or '-' }}</td>
+              <td><a href="/user/{{ c.user_id }}">{{ c.full_name }}</a></td>
+              <td>{{ c.username or '-' }}</td>
+              <td>{{ '%.2f'|format(c.score) if c.score is not none else '-' }}</td>
+              <td>
+                {% if role.author_user_id %}
+                  <details>
+                    <summary>Пригласить</summary>
+                    <form class="stacked-form" method="post" action="/send-request">
+                      <input type="hidden" name="sender_user_id" value="{{ role.author_user_id }}" />
+                      <input type="hidden" name="receiver_user_id" value="{{ c.user_id }}" />
+                      <input type="hidden" name="topic_id" value="{{ role.topic_id }}" />
+                      <input type="hidden" name="role_id" value="{{ role.id }}" />
+                      <input type="hidden" name="return_url" value="{{ request.url.path }}#role-candidates" />
+                      <label>Сообщение<textarea class="form-control" name="body" required>{{ c.default_message }}</textarea></label>
+                      <div class="form-actions"><button class="btn" type="submit">Отправить приглашение</button></div>
+                    </form>
+                  </details>
+                {% else %}
+                  <span class="muted">Нет автора для заявки</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Запустите подбор, чтобы получить свежие рекомендации.</p>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

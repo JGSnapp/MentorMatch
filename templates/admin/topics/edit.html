@@ -1,0 +1,37 @@
+{% extends 'admin/base.html' %}
+{% block title %}Редактирование темы #{{ topic.id }} — MentorMatch{% endblock %}
+{% block page_title %}Изменить тему{% endblock %}
+{% block page_description %}Актуализируйте содержание и статус темы{% endblock %}
+{% block header_actions %}
+  <a class="btn btn--ghost" href="/topic/{{ topic.id }}">Просмотр темы</a>
+  <a class="btn btn--ghost" href="/?kind=topics">Назад</a>
+{% endblock %}
+
+{% block content %}
+<section class="section">
+  <article class="card">
+    <h2 class="card__title">Основные поля</h2>
+    <p class="card__subtitle">Автор: {{ topic.author }}</p>
+    <form method="post" action="/update-topic">
+      <input type="hidden" name="topic_id" value="{{ topic.id }}">
+      <div class="form-field"><label for="topic_title">Заголовок</label><input class="form-control" id="topic_title" type="text" name="title" value="{{ topic.title }}" required></div>
+      <div class="form-field">
+        <label for="topic_seeking">Кого ищем</label>
+        <select class="form-control" id="topic_seeking" name="seeking_role">
+          <option value="student" {{ 'selected' if topic.seeking_role=='student' else '' }}>student</option>
+          <option value="supervisor" {{ 'selected' if topic.seeking_role=='supervisor' else '' }}>supervisor</option>
+        </select>
+      </div>
+      <div class="form-field"><label for="topic_direction">Направление (9 / 11 / 45)</label><input class="form-control" id="topic_direction" type="number" name="direction" min="0" max="99" value="{{ topic.direction or '' }}" placeholder="опционально"></div>
+      <label class="form-check"><input type="checkbox" name="is_active" {{ 'checked' if topic.is_active else '' }}> Активна</label>
+      <div class="form-field"><label for="topic_description">Описание</label><textarea class="form-control" id="topic_description" name="description">{{ topic.description or '' }}</textarea></div>
+      <div class="form-field"><label for="topic_outcomes">Ожидаемые результаты</label><textarea class="form-control" id="topic_outcomes" name="expected_outcomes">{{ topic.expected_outcomes or '' }}</textarea></div>
+      <div class="form-field"><label for="topic_skills">Требуемые навыки</label><input class="form-control" id="topic_skills" type="text" name="required_skills" value="{{ topic.required_skills or '' }}"></div>
+      <div class="form-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn btn--ghost" href="/topic/{{ topic.id }}">Отмена</a>
+      </div>
+    </form>
+  </article>
+</section>
+{% endblock %}

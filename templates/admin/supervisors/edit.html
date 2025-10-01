@@ -1,0 +1,31 @@
+{% extends 'admin/base.html' %}
+{% block title %}Редактирование руководителя #{{ sup.id }} — MentorMatch{% endblock %}
+{% block page_title %}Изменить руководителя{% endblock %}
+{% block page_description %}Актуализируйте профиль ментора{% endblock %}
+{% block header_actions %}
+  <a class="btn btn--ghost" href="/supervisor/{{ sup.id }}">Просмотр карточки</a>
+  <a class="btn btn--ghost" href="/?kind=supervisors">Назад</a>
+{% endblock %}
+
+{% block content %}
+<section class="section">
+  <article class="card">
+    <h2 class="card__title">Форма редактирования</h2>
+    <form method="post" action="/update-supervisor">
+      <input type="hidden" name="user_id" value="{{ sup.id }}">
+      <div class="form-field"><label for="sup_full_name">ФИО</label><input class="form-control" id="sup_full_name" type="text" name="full_name" value="{{ sup.full_name }}" required></div>
+      <div class="form-field"><label for="sup_email">Email</label><input class="form-control" id="sup_email" type="text" name="email" value="{{ sup.email or '' }}"></div>
+      <div class="form-field"><label for="sup_username">Username (tg)</label><input class="form-control" id="sup_username" type="text" name="username" value="{{ sup.username or '' }}"></div>
+      <div class="form-field"><label for="sup_position">Должность</label><input class="form-control" id="sup_position" type="text" name="position" value="{{ sup.position or '' }}"></div>
+      <div class="form-field"><label for="sup_degree">Учёная степень</label><input class="form-control" id="sup_degree" type="text" name="degree" value="{{ sup.degree or '' }}"></div>
+      <div class="form-field"><label for="sup_capacity">Лимит студентов</label><input class="form-control" id="sup_capacity" type="number" name="capacity" min="0" value="{{ sup.capacity or '' }}"></div>
+      <div class="form-field"><label for="sup_interests">Интересы</label><textarea class="form-control" id="sup_interests" name="interests">{{ sup.interests or '' }}</textarea></div>
+      <div class="form-field"><label for="sup_requirements">Требования</label><textarea class="form-control" id="sup_requirements" name="requirements">{{ sup.requirements or '' }}</textarea></div>
+      <div class="form-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn btn--ghost" href="/supervisor/{{ sup.id }}">Отмена</a>
+      </div>
+    </form>
+  </article>
+</section>
+{% endblock %}

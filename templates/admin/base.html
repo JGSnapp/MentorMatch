@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}MentorMatch — админка{% endblock %}</title>
+  <style>
+    :root {
+      --color-bg: #f1f5f9;
+      --color-surface: #ffffff;
+      --color-surface-alt: #0f172a;
+      --color-border: #e2e8f0;
+      --color-border-strong: #cbd5e1;
+      --color-text: #0f172a;
+      --color-text-muted: #64748b;
+      --color-accent: #2563eb;
+      --color-accent-dark: #1d4ed8;
+      --color-success: #16a34a;
+      --color-warning: #d97706;
+      --color-danger: #dc2626;
+      --radius: 16px;
+      --shadow-md: 0 20px 45px rgba(15, 23, 42, 0.12);
+      --shadow-sm: 0 10px 25px rgba(15, 23, 42, 0.08);
+      font-size: 16px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--color-bg);
+      color: var(--color-text);
+    }
+
+    a { color: inherit; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      min-height: 100vh;
+      background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+    }
+
+    .sidebar {
+      background: var(--color-surface-alt);
+      color: rgba(241, 245, 249, 0.95);
+      padding: 32px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+
+    .sidebar__brand {
+      font-weight: 700;
+      font-size: 1.4rem;
+      letter-spacing: 0.02em;
+    }
+
+    .sidebar__nav {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .sidebar__link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      color: rgba(241, 245, 249, 0.72);
+      text-decoration: none;
+      font-weight: 500;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .sidebar__link:hover {
+      background: rgba(148, 163, 184, 0.14);
+      color: #f8fafc;
+    }
+
+    .sidebar__link--active {
+      background: rgba(37, 99, 235, 0.18);
+      color: #ffffff;
+    }
+
+    .main {
+      padding: 36px clamp(24px, 6vw, 48px);
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+
+    .page-header {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .page-header__top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .page-title {
+      font-size: clamp(1.6rem, 2.2vw, 2.2rem);
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .page-subtitle {
+      margin: 0;
+      color: var(--color-text-muted);
+      font-size: 1rem;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: 12px;
+      border: none;
+      padding: 10px 18px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
+      background: var(--color-accent);
+      color: #fff;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .btn:hover {
+      background: var(--color-accent-dark);
+      transform: translateY(-1px);
+    }
+
+    .btn--ghost {
+      background: rgba(37, 99, 235, 0.1);
+      color: var(--color-accent);
+      box-shadow: none;
+    }
+
+    .btn--ghost:hover,
+    .btn--ghost.active {
+      background: rgba(37, 99, 235, 0.2);
+    }
+
+    .btn--secondary {
+      background: rgba(15, 23, 42, 0.85);
+    }
+
+    .alert {
+      border-radius: 14px;
+      padding: 14px 18px;
+      border: 1px solid rgba(14, 165, 233, 0.35);
+      background: rgba(224, 242, 254, 0.8);
+      color: #0f172a;
+      font-weight: 500;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .section {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .card {
+      background: var(--color-surface);
+      border-radius: var(--radius);
+      padding: clamp(20px, 4vw, 28px);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      box-shadow: var(--shadow-md);
+    }
+
+    .card__title {
+      margin: 0 0 8px;
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+
+    .card__subtitle {
+      margin: 0 0 18px;
+      color: var(--color-text-muted);
+      font-size: 0.95rem;
+    }
+
+    .card-grid {
+      display: grid;
+      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+
+    form {
+      display: grid;
+      gap: 14px;
+    }
+
+    .form-inline {
+      display: inline-flex;
+      gap: 0;
+      align-items: center;
+    }
+
+    .form-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-field label {
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+
+    .form-control, textarea.form-control, select.form-control {
+      width: 100%;
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+      font-family: inherit;
+      color: var(--color-text);
+      background: #fff;
+      transition: border 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .form-control:focus {
+      outline: none;
+      border-color: rgba(37, 99, 235, 0.6);
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
+    }
+
+    textarea.form-control {
+      min-height: 110px;
+      resize: vertical;
+    }
+
+    .form-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .form-check {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.95rem;
+    }
+
+    .muted { color: var(--color-text-muted); }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+      background: var(--color-surface);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .table thead {
+      background: rgba(148, 163, 184, 0.16);
+    }
+
+    .table th, .table td {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .properties {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+
+    .properties__item {
+      background: rgba(148, 163, 184, 0.12);
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .properties__label {
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--color-text-muted);
+      font-weight: 600;
+    }
+
+    .properties__value {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.95rem;
+      color: var(--color-text);
+    }
+
+    .topic-card {
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: linear-gradient(145deg, rgba(248, 250, 252, 0.9) 0%, rgba(226, 232, 240, 0.6) 100%);
+      padding: clamp(18px, 3vw, 24px);
+      display: grid;
+      gap: 18px;
+    }
+
+    .topic-card__header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+
+    .topic-card__title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .topic-card__meta {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: var(--color-text-muted);
+      font-size: 0.9rem;
+    }
+
+    .topic-card__roles {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .topic-card__role {
+      border-radius: 14px;
+      padding: 14px;
+      background: #fff;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      display: grid;
+      gap: 10px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .topic-card__role-title {
+      font-weight: 600;
+    }
+
+    .topic-card__role select {
+      font-weight: 500;
+    }
+
+    .list {
+      display: grid;
+      gap: 14px;
+      padding: 0;
+      margin: 16px 0 0 0;
+      list-style: none;
+    }
+
+    .list__item {
+      display: grid;
+      gap: 6px;
+      padding-bottom: 12px;
+      border-bottom: 1px dashed rgba(148, 163, 184, 0.4);
+    }
+
+    .list__item:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+
+    .list__meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: var(--color-text-muted);
+      font-size: 0.85rem;
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 6px 12px;
+      border: 1px solid rgba(148, 163, 184, 0.6);
+      background: rgba(255, 255, 255, 0.6);
+      font-size: 0.85rem;
+      color: var(--color-text-muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(37, 99, 235, 0.12);
+      color: var(--color-accent);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .stacked-form {
+      display: grid;
+      gap: 10px;
+    }
+
+    .stacked-form textarea {
+      min-height: 90px;
+    }
+
+    details summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--color-accent);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: rgba(37, 99, 235, 0.12);
+      color: var(--color-accent);
+    }
+
+    .badge--success { background: rgba(22, 163, 74, 0.16); color: var(--color-success); }
+    .badge--warning { background: rgba(217, 119, 6, 0.16); color: var(--color-warning); }
+    .badge--danger { background: rgba(220, 38, 38, 0.16); color: var(--color-danger); }
+
+    @media (max-width: 1080px) {
+      .layout { grid-template-columns: 240px 1fr; }
+    }
+
+    @media (max-width: 860px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 0;
+        flex-direction: row;
+        gap: 12px;
+        overflow-x: auto;
+        padding: 18px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      }
+
+      .sidebar__nav {
+        flex-direction: row;
+        gap: 12px;
+      }
+
+      .sidebar__brand { min-width: max-content; }
+
+      .sidebar__link {
+        min-width: max-content;
+      }
+
+      .main {
+        padding: 24px;
+      }
+    }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  {% set current_path = request.url.path %}
+  {% set current_kind = request.query_params.get('kind') if request.query_params else None %}
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar__brand">MentorMatch</div>
+      <nav class="sidebar__nav">
+        <a class="sidebar__link {{ 'sidebar__link--active' if current_path == '/' }}" href="/">Панель</a>
+        <a class="sidebar__link {{ 'sidebar__link--active' if current_path.startswith('/user') or (current_path == '/' and current_kind == 'students') }}" href="/?kind=students">Студенты</a>
+        <a class="sidebar__link {{ 'sidebar__link--active' if current_path.startswith('/supervisor') or (current_path == '/' and current_kind == 'supervisors') }}" href="/?kind=supervisors">Руководители</a>
+        <a class="sidebar__link {{ 'sidebar__link--active' if current_path.startswith('/topic') or current_path.startswith('/role') or (current_path == '/' and (not current_kind or current_kind == 'topics')) }}" href="/?kind=topics">Темы и роли</a>
+      </nav>
+    </aside>
+    <main class="main">
+      <header class="page-header">
+        <div class="page-header__top">
+          <div>
+            <h1 class="page-title">{% block page_title %}Админ-панель{% endblock %}</h1>
+            <p class="page-subtitle">{% block page_description %}Современный интерфейс управления проектом MentorMatch{% endblock %}</p>
+          </div>
+          <div class="header-actions">
+            {% block header_actions %}{% endblock %}
+          </div>
+        </div>
+      </header>
+
+      {% if msg %}
+        <div class="alert">{{ msg }}</div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

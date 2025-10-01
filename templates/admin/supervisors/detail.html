@@ -1,0 +1,79 @@
+{% extends 'admin/base.html' %}
+{% block title %}Руководитель #{{ sup.id }} — MentorMatch{% endblock %}
+{% block page_title %}{{ sup.full_name }}{% endblock %}
+{% block page_description %}Полная карточка руководителя и рекомендованные темы{% endblock %}
+{% block header_actions %}
+  <a class="btn" href="/edit-supervisor/{{ sup.id }}">Редактировать</a>
+  <a class="btn btn--ghost" href="/?kind=supervisors">К списку</a>
+  <form class="form-inline" method="post" action="/do-match-supervisor">
+    <input type="hidden" name="supervisor_user_id" value="{{ sup.id }}" />
+    <button class="btn btn--secondary" type="submit">Подобрать темы</button>
+  </form>
+{% endblock %}
+
+{% block content %}
+<section class="section">
+  <article class="card">
+    <h2 class="card__title">Основное</h2>
+    <div class="properties">
+      <div class="properties__item"><span class="properties__label">ID</span><div class="properties__value">#{{ sup.id }}</div></div>
+      <div class="properties__item"><span class="properties__label">Email</span><div class="properties__value">{{ sup.email or '-' }}</div></div>
+      <div class="properties__item"><span class="properties__label">Telegram</span><div class="properties__value">{{ sup.username or '-' }}</div></div>
+      <div class="properties__item"><span class="properties__label">Создан</span><div class="properties__value">{{ sup.created_at }}</div></div>
+      <div class="properties__item"><span class="properties__label">Должность</span><div class="properties__value">{{ sup.position or '-' }}</div></div>
+      <div class="properties__item"><span class="properties__label">Учёная степень</span><div class="properties__value">{{ sup.degree or '-' }}</div></div>
+      <div class="properties__item"><span class="properties__label">Лимит студентов</span><div class="properties__value">{{ sup.capacity or '-' }}</div></div>
+    </div>
+  </article>
+
+  <article class="card">
+    <h2 class="card__title">Интересы и требования</h2>
+    <div class="properties">
+      <div class="properties__item"><span class="properties__label">Интересы</span><div class="properties__value">{{ sup.interests or '-' }}</div></div>
+      <div class="properties__item"><span class="properties__label">Требования</span><div class="properties__value">{{ sup.requirements or '-' }}</div></div>
+    </div>
+  </article>
+
+  <article class="card" id="recommended-topics">
+    <h2 class="card__title">Рекомендованные темы</h2>
+    <p class="card__subtitle">Автоматические рекомендации на основе алгоритма подбора.</p>
+    {% if recommended_topics %}
+      <table class="table">
+        <thead><tr><th>Место</th><th>Тема</th><th>Оценка</th><th>Действия</th></tr></thead>
+        <tbody>
+          {% for t in recommended_topics %}
+            <tr>
+              <td>{{ t.rank or '-' }}</td>
+              <td>
+                <strong><a href="/topic/{{ t.topic_id }}">{{ t.title or ('Тема #' ~ t.topic_id) }}</a></strong>
+                <div class="muted">Автор: {{ t.author_name or '-' }}</div>
+                {% if t.direction %}<div class="muted">Направление: {{ t.direction }}</div>{% endif %}
+              </td>
+              <td>{{ '%.2f'|format(t.score) if t.score is not none else '-' }}</td>
+              <td>
+                {% if t.author_user_id %}
+                  <details>
+                    <summary>Предложить участие</summary>
+                    <form class="stacked-form" method="post" action="/send-request">
+                      <input type="hidden" name="sender_user_id" value="{{ sup.id }}" />
+                      <input type="hidden" name="receiver_user_id" value="{{ t.author_user_id }}" />
+                      <input type="hidden" name="topic_id" value="{{ t.topic_id }}" />
+                      <input type="hidden" name="return_url" value="{{ request.url.path }}#recommended-topics" />
+                      <label>Сообщение<textarea class="form-control" name="body" required>{{ t.default_message }}</textarea></label>
+                      <div class="form-actions"><button class="btn" type="submit">Отправить заявку</button></div>
+                    </form>
+                  </details>
+                {% else %}
+                  <span class="muted">Нет автора для заявки</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Запустите подбор, чтобы увидеть рекомендации.</p>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

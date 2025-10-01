@@ -1,0 +1,36 @@
+{% extends 'admin/base.html' %}
+{% block title %}Редактирование пользователя #{{ user.id }} — MentorMatch{% endblock %}
+{% block page_title %}Изменить пользователя{% endblock %}
+{% block page_description %}Обновите контактные данные и роль участника{% endblock %}
+{% block header_actions %}
+  <a class="btn btn--ghost" href="/user/{{ user.id }}">Просмотр профиля</a>
+  <a class="btn btn--ghost" href="/?kind={{ 'supervisors' if user.role=='supervisor' else 'students' }}">Назад</a>
+{% endblock %}
+
+{% block content %}
+<section class="section">
+  <article class="card">
+    <h2 class="card__title">Форма редактирования</h2>
+    <form method="post" action="/update-user">
+      <input type="hidden" name="user_id" value="{{ user.id }}">
+      <div class="form-field"><label for="full_name">ФИО</label><input class="form-control" id="full_name" type="text" name="full_name" value="{{ user.full_name }}" required></div>
+      <div class="form-field"><label for="email">Email</label><input class="form-control" id="email" type="text" name="email" value="{{ user.email or '' }}"></div>
+      <div class="form-field"><label for="username">Username (tg)</label><input class="form-control" id="username" type="text" name="username" value="{{ user.username or '' }}"></div>
+      <div class="form-field">
+        <label for="role">Роль</label>
+        <select class="form-control" id="role" name="role">
+          <option value="student" {{ 'selected' if user.role=='student' else '' }}>student</option>
+          <option value="supervisor" {{ 'selected' if user.role=='supervisor' else '' }}>supervisor</option>
+          <option value="admin" {{ 'selected' if user.role=='admin' else '' }}>admin</option>
+        </select>
+      </div>
+      <label class="form-check"><input type="checkbox" name="consent_personal" {{ 'checked' if user.consent_personal else '' }}> Согласие на обработку ПДн</label>
+      <label class="form-check"><input type="checkbox" name="consent_private" {{ 'checked' if user.consent_private else '' }}> Согласие на публикации в приватных чатах</label>
+      <div class="form-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn btn--ghost" href="/user/{{ user.id }}">Отмена</a>
+      </div>
+    </form>
+  </article>
+</section>
+{% endblock %}

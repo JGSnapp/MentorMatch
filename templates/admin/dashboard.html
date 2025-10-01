@@ -1,0 +1,235 @@
+{% extends 'admin/base.html' %}
+{% block title %}Панель управления — MentorMatch{% endblock %}
+{% block page_title %}Панель управления{% endblock %}
+{% block page_description %}Импорт данных, управление темами и быстрые действия для менторов и студентов{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="card-grid">
+    <article class="card">
+      <h2 class="card__title">Импорт из Google Sheets</h2>
+      <p class="card__subtitle">Обновите каталог студентов и тем из настроенной таблицы.</p>
+      <form method="post" action="/import-sheet">
+        <div class="form-field">
+          <label for="spreadsheet_id">Spreadsheet ID</label>
+          <input class="form-control" id="spreadsheet_id" type="text" name="spreadsheet_id" value="{{ env_spreadsheet_id }}" required />
+        </div>
+        <div class="form-field">
+          <label for="sheet_name">Название листа</label>
+          <input class="form-control" id="sheet_name" type="text" name="sheet_name" placeholder="если пусто — берётся первый лист" />
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="submit">Импортировать</button>
+        </div>
+      </form>
+    </article>
+
+    <article class="card">
+      <h2 class="card__title">Новый научный руководитель</h2>
+      <p class="card__subtitle">Быстро добавьте ментора и его профиль для подбора.</p>
+      <form method="post" action="/add-supervisor">
+        <div class="form-field"><label for="sup_full_name">ФИО</label><input class="form-control" id="sup_full_name" type="text" name="full_name" required></div>
+        <div class="form-field"><label for="sup_email">Email</label><input class="form-control" id="sup_email" type="text" name="email"></div>
+        <div class="form-field"><label for="sup_username">Username (TG)</label><input class="form-control" id="sup_username" type="text" name="username"></div>
+        <div class="form-field"><label for="sup_position">Должность</label><input class="form-control" id="sup_position" type="text" name="position"></div>
+        <div class="form-field"><label for="sup_degree">Учёная степень</label><input class="form-control" id="sup_degree" type="text" name="degree"></div>
+        <div class="form-field"><label for="sup_capacity">Лимит студентов</label><input class="form-control" id="sup_capacity" type="number" name="capacity" min="0"></div>
+        <div class="form-field"><label for="sup_requirements">Требования</label><textarea class="form-control" id="sup_requirements" name="requirements"></textarea></div>
+        <div class="form-field"><label for="sup_interests">Интересы</label><textarea class="form-control" id="sup_interests" name="interests"></textarea></div>
+        <div class="form-actions">
+          <button class="btn" type="submit">Сохранить руководителя</button>
+        </div>
+      </form>
+    </article>
+
+    <article class="card">
+      <h2 class="card__title">Новая тема</h2>
+      <p class="card__subtitle">Опишите тему, ожидаемые результаты и роли.</p>
+      <form method="post" action="/add-topic">
+        <div class="form-field"><label for="topic_title">Название темы</label><input class="form-control" id="topic_title" type="text" name="title" required></div>
+        <div class="form-field"><label for="topic_author_id">Автор (user_id)</label><input class="form-control" id="topic_author_id" type="number" name="author_user_id" placeholder="опционально"></div>
+        <div class="form-field"><label for="topic_author_name">Автор (ФИО)</label><input class="form-control" id="topic_author_name" type="text" name="author_full_name" placeholder="если нет user_id"></div>
+        <div class="form-field"><label for="topic_description">Описание</label><textarea class="form-control" id="topic_description" name="description"></textarea></div>
+        <div class="form-field"><label for="topic_outcomes">Ожидаемые результаты</label><textarea class="form-control" id="topic_outcomes" name="expected_outcomes"></textarea></div>
+        <div class="form-field"><label for="topic_skills">Требуемые навыки</label><input class="form-control" id="topic_skills" type="text" name="required_skills" placeholder="через запятую"></div>
+        <div class="form-field"><label for="topic_direction">Направление (9 / 11 / 45)</label><input class="form-control" id="topic_direction" type="number" name="direction" min="0" max="99" placeholder="опционально"></div>
+        <div class="form-field">
+          <label for="topic_role">Кого ищем</label>
+          <select class="form-control" id="topic_role" name="seeking_role">
+            <option value="student">student</option>
+            <option value="supervisor">supervisor</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="submit">Добавить тему</button>
+        </div>
+      </form>
+    </article>
+  </div>
+
+  <article class="card">
+    <form method="post" action="/save-approvals">
+      <div class="page-header__top" style="align-items:flex-start;">
+        <div>
+          <h2 class="card__title">Назначения ролей и руководителей</h2>
+          <p class="card__subtitle">Закрепите руководителей за темами и назначьте студентов на роли.</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn" type="submit">Сохранить изменения</button>
+        </div>
+      </div>
+      {% if role_topics %}
+        {% for topic in role_topics %}
+        <section class="topic-card">
+          <div class="topic-card__header">
+            <div>
+              <h3 class="topic-card__title">{{ topic.title or ('Тема #' ~ topic.id) }}</h3>
+              <div class="topic-card__meta">
+                <span>Автор: {{ topic.author_name or ('#' ~ topic.author_user_id) }}</span>
+                {% if topic.supervisor_locked %}
+                  <span class="badge badge--warning">Руководитель совпадает с автором</span>
+                {% endif %}
+              </div>
+            </div>
+            <div style="min-width:240px; max-width:320px;">
+              <div class="form-field">
+                <label for="topic_supervisor_{{ topic.id }}">Руководитель</label>
+                <select class="form-control" id="topic_supervisor_{{ topic.id }}" name="topic_supervisor_{{ topic.id }}" {% if topic.supervisor_locked %}disabled{% endif %}>
+                  <option value="">— Не выбран —</option>
+                  {% for sup in all_supervisors %}
+                    <option value="{{ sup.id }}" {% if sup.id == topic.approved_supervisor_user_id %}selected{% endif %}>{{ sup.full_name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="topic-card__roles">
+            {% for role in topic.roles %}
+              <div class="topic-card__role">
+                <div class="topic-card__role-title">{{ role.name or ('Роль #' ~ role.id) }}</div>
+                <div class="form-field">
+                  <label for="role_student_{{ role.id }}">Студент</label>
+                  <select class="form-control" id="role_student_{{ role.id }}" name="role_student_{{ role.id }}">
+                    <option value="">— Не выбран —</option>
+                    {% for student in all_students %}
+                      <option value="{{ student.id }}" {% if student.id == role.approved_student_user_id %}selected{% endif %}>{{ student.full_name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                {% if role.approved_student_name %}
+                  <span class="chip">Назначен: {{ role.approved_student_name }}</span>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        </section>
+        {% endfor %}
+      {% else %}
+        <p class="muted">Пока нет созданных ролей.</p>
+      {% endif %}
+    </form>
+  </article>
+
+  <article class="card">
+    <div class="page-header__top" style="align-items:flex-end;">
+      <div>
+        <h2 class="card__title">Последние записи</h2>
+        <p class="card__subtitle">Список последних 10 объектов выбранного типа.</p>
+      </div>
+      <form class="filters" method="get" action="/">
+        <div class="form-field" style="min-width:160px;">
+          <label for="kind">Тип</label>
+          <select class="form-control" id="kind" name="kind">
+            <option value="topics" {{ 'selected' if kind=='topics' else '' }}>Темы</option>
+            <option value="students" {{ 'selected' if kind=='students' else '' }}>Студенты</option>
+            <option value="supervisors" {{ 'selected' if kind=='supervisors' else '' }}>Научные руководители</option>
+          </select>
+        </div>
+        <div class="form-field" style="max-width:160px;">
+          <label for="offset">Смещение</label>
+          <input class="form-control" id="offset" type="number" name="offset" min="0" value="{{ offset or 0 }}" />
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="submit">Показать</button>
+        </div>
+      </form>
+    </div>
+    <div class="header-actions" style="gap:8px;">
+      <a class="btn btn--ghost {{ 'active' if kind=='topics' else '' }}" href="/?kind=topics">Темы</a>
+      <a class="btn btn--ghost {{ 'active' if kind=='students' else '' }}" href="/?kind=students">Студенты</a>
+      <a class="btn btn--ghost {{ 'active' if kind=='supervisors' else '' }}" href="/?kind=supervisors">Руководители</a>
+    </div>
+    <ul class="list">
+      {% if kind == 'topics' %}
+        {% for it in items %}
+          <li class="list__item">
+            <div><strong>#{{ it.id }}</strong> — <a href="/topic/{{ it.id }}">{{ it.title }}</a></div>
+            <div class="list__meta">
+              <span class="chip">{{ it.seeking_role }}</span>
+              {% if it.direction %}<span class="chip">напр.: {{ it.direction }}</span>{% endif %}
+              <span>Автор: {{ it.author }}</span>
+              <span>{{ it.created_at }}</span>
+              <a href="/edit-topic/{{ it.id }}">Изменить</a>
+            </div>
+          </li>
+        {% endfor %}
+      {% elif kind == 'students' %}
+        {% for it in items %}
+          <li class="list__item">
+            <div><strong>#{{ it.id }}</strong> — <a href="/user/{{ it.id }}">{{ it.full_name }}</a></div>
+            <div class="list__meta">
+              <span class="chip">program: {{ it.program or '-' }}</span>
+              <span>{{ it.created_at }}</span>
+              <a href="/edit-user/{{ it.id }}">Изменить</a>
+            </div>
+          </li>
+        {% endfor %}
+      {% else %}
+        {% for it in items %}
+          <li class="list__item">
+            <div><strong>#{{ it.id }}</strong> — <a href="/supervisor/{{ it.id }}">{{ it.full_name }}</a></div>
+            <div class="list__meta">
+              <span class="chip">{{ it.position or '-' }}</span>
+              <span class="chip">{{ it.degree or '-' }}</span>
+              <span class="chip">cap: {{ it.capacity or 0 }}</span>
+              <span>{{ it.created_at }}</span>
+              <a href="/edit-supervisor/{{ it.id }}">Изменить</a>
+            </div>
+          </li>
+        {% endfor %}
+      {% endif %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2 class="card__title">Быстрые действия</h2>
+    <p class="card__subtitle">Запустите подбор кандидатов вручную.</p>
+    <div class="card-grid">
+      <form method="post" action="/do-match-topic">
+        <div class="form-field"><label for="match_topic_id">ID темы</label><input class="form-control" id="match_topic_id" type="number" name="topic_id" required></div>
+        <div class="form-field">
+          <label for="match_target_role">Кого ищем</label>
+          <select class="form-control" id="match_target_role" name="target_role">
+            <option value="">Авто</option>
+            <option value="student">Студентов</option>
+            <option value="supervisor">Руководителей</option>
+          </select>
+        </div>
+        <div class="form-actions"><button class="btn" type="submit">Подобрать под тему</button></div>
+      </form>
+      <form method="post" action="/do-match-role">
+        <div class="form-field"><label for="match_role_id">ID роли</label><input class="form-control" id="match_role_id" type="number" name="role_id" required></div>
+        <div class="form-actions"><button class="btn" type="submit">Подобрать под роль</button></div>
+      </form>
+      <form method="post" action="/do-match-student">
+        <div class="form-field"><label for="match_student_id">ID студента</label><input class="form-control" id="match_student_id" type="number" name="student_user_id" required></div>
+        <div class="form-actions"><button class="btn" type="submit">Подобрать темы студенту</button></div>
+      </form>
+      <form method="post" action="/do-match-supervisor">
+        <div class="form-field"><label for="match_supervisor_id">ID руководителя</label><input class="form-control" id="match_supervisor_id" type="number" name="supervisor_user_id" required></div>
+        <div class="form-actions"><button class="btn" type="submit">Подобрать темы руководителю</button></div>
+      </form>
+    </div>
+  </article>
+</section>
+{% endblock %}
