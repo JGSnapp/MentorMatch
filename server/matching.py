@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 
 import psycopg2
 import psycopg2.extras
@@ -21,6 +21,105 @@ PROXY_MODEL = os.getenv('PROXY_MODEL', 'gpt-4o-mini')
 client: Optional[OpenAI] = None
 if PROXY_API_KEY and PROXY_BASE_URL:
     client = OpenAI(api_key=PROXY_API_KEY, base_url=PROXY_BASE_URL)
+
+
+def _to_vector(raw: Optional[Sequence[float]]) -> Optional[List[float]]:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return raw if raw else None
+    try:
+        vec = list(raw)
+        return vec if vec else None
+    except TypeError:
+        return None
+
+
+def _fetch_topic_embedding(conn, topic_id: int) -> Optional[List[float]]:
+    with conn.cursor() as cur:
+        cur.execute('SELECT embeddings FROM topics WHERE id=%s', (topic_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    value = row[0] if isinstance(row, (tuple, list)) else row
+    return _to_vector(value)
+
+
+def _fetch_role_embedding(conn, role_id: int) -> Optional[List[float]]:
+    with conn.cursor() as cur:
+        cur.execute('SELECT embeddings FROM roles WHERE id=%s', (role_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    value = row[0] if isinstance(row, (tuple, list)) else row
+    return _to_vector(value)
+
+
+def _fetch_user_embedding(conn, user_id: int) -> Optional[List[float]]:
+    with conn.cursor() as cur:
+        cur.execute('SELECT embeddings FROM users WHERE id=%s', (user_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    value = row[0] if isinstance(row, (tuple, list)) else row
+    return _to_vector(value)
+
+
+def get_similar_candidates(
+    conn,
+    query_vector: Optional[Sequence[float]],
+    role: str,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    vector = _to_vector(query_vector)
+    if not vector:
+        return []
+
+    query: str
+    params: tuple
+    if role == 'student':
+        query = (
+            '''
+            SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
+                   1.0 / (1.0 + (u.embeddings <-> %s)) AS score,
+                   sp.program, sp.skills, sp.interests, sp.cv,
+                   sp.skills_to_learn, sp.preferred_team_track, sp.team_has AS team_role, sp.team_needs,
+                   sp.dev_track, sp.science_track, sp.startup_track
+            FROM users u
+            LEFT JOIN student_profiles sp ON sp.user_id = u.id
+            WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
+              AND u.embeddings IS NOT NULL
+            ORDER BY u.embeddings <-> %s
+            LIMIT %s
+            '''
+        )
+        params = (vector, vector, limit)
+    else:
+        query = (
+            '''
+            SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
+                   1.0 / (1.0 + (u.embeddings <-> %s)) AS score,
+                   sp.position, sp.degree, sp.capacity, sp.interests
+            FROM users u
+            LEFT JOIN supervisor_profiles sp ON sp.user_id = u.id
+            WHERE LOWER(u.role) = 'supervisor' AND u.embeddings IS NOT NULL
+            ORDER BY u.embeddings <-> %s
+            LIMIT %s
+            '''
+        )
+        params = (vector, vector, limit)
+
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        try:
+            print(f"WARN: similar candidates query failed: {exc}")
+        except Exception:
+            pass
+        return []
 
 
 def get_topic(conn, topic_id: int) -> Optional[Dict[str, Any]]:
@@ -57,6 +156,7 @@ def get_role(conn, role_id: int) -> Optional[Dict[str, Any]]:
 def get_candidates(conn, topic_id: int, target_role: str, limit: int = 20) -> List[Dict[str, Any]]:
     role = (target_role or 'student').lower()
     role = role if role in ('student', 'supervisor') else 'student'
+    topic_vector = _fetch_topic_embedding(conn, topic_id)
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         if role == 'student':
@@ -83,6 +183,10 @@ def get_candidates(conn, topic_id: int, target_role: str, limit: int = 20) -> Li
                     return [dict(r) for r in rows]
             except Exception as e:
                 print(f"WARN: topic_candidates unavailable for students: {e}")
+
+            similar = get_similar_candidates(conn, topic_vector, role, limit)
+            if similar:
+                return similar
 
             # Fallback: latest students
             cur.execute(
@@ -122,6 +226,10 @@ def get_candidates(conn, topic_id: int, target_role: str, limit: int = 20) -> Li
                     return [dict(r) for r in rows]
             except Exception as e:
                 print(f"WARN: topic_candidates unavailable for supervisors: {e}")
+
+            similar = get_similar_candidates(conn, topic_vector, role, limit)
+            if similar:
+                return similar
 
             cur.execute(
                 '''
@@ -288,23 +396,28 @@ def handle_match_role(conn, role_id: int) -> Dict[str, Any]:
     if not topic:
         return {'status': 'error', 'message': f'Topic #{role_row["topic_id"]} not found'}
 
-    # Baseline candidates: latest students
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            '''
-            SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
-                   NULL::double precision AS score,
-                   sp.program, sp.skills, sp.interests, sp.cv,
-                   sp.skills_to_learn, sp.preferred_team_track, sp.team_has AS team_role, sp.team_needs,
-                   sp.dev_track, sp.science_track, sp.startup_track
-            FROM users u
-            LEFT JOIN student_profiles sp ON sp.user_id = u.id
-            WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
-            ORDER BY u.created_at DESC
-            LIMIT %s
-            ''', (20,),
-        )
-        candidates = [dict(r) for r in cur.fetchall()]
+    role_vector = _to_vector(role_row.get('embeddings'))
+    topic_vector = _to_vector(topic.get('embeddings'))
+    query_vector = role_vector or topic_vector
+    candidates = get_similar_candidates(conn, query_vector, 'student', limit=20)
+
+    if not candidates:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                '''
+                SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
+                       NULL::double precision AS score,
+                       sp.program, sp.skills, sp.interests, sp.cv,
+                       sp.skills_to_learn, sp.preferred_team_track, sp.team_has AS team_role, sp.team_needs,
+                       sp.dev_track, sp.science_track, sp.startup_track
+                FROM users u
+                LEFT JOIN student_profiles sp ON sp.user_id = u.id
+                WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
+                ORDER BY u.created_at DESC
+                LIMIT %s
+                ''', (20,),
+            )
+            candidates = [dict(r) for r in cur.fetchall()]
 
     # Enrich CV text
     for c in candidates:
@@ -517,35 +630,103 @@ def get_student(conn, student_user_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-def get_topics_needing_students(conn, limit: int = 20) -> List[Dict[str, Any]]:
+def get_topics_needing_students(
+    conn,
+    limit: int = 20,
+    *,
+    query_vector: Optional[Sequence[float]] = None,
+) -> List[Dict[str, Any]]:
+    vector = _to_vector(query_vector)
+    if vector:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    '''
+                    SELECT t.id, t.title, t.description, t.required_skills, t.expected_outcomes,
+                           t.author_user_id, u.full_name AS author_name, t.created_at,
+                           1.0 / (1.0 + (t.embeddings <-> %s)) AS score
+                    FROM topics t
+                    JOIN users u ON u.id = t.author_user_id
+                    WHERE t.is_active = TRUE
+                      AND t.seeking_role = 'student'
+                      AND t.embeddings IS NOT NULL
+                    ORDER BY t.embeddings <-> %s
+                    LIMIT %s
+                    ''',
+                    (vector, vector, limit),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+        except Exception as exc:
+            try:
+                print(f"WARN: similar topics for students failed: {exc}")
+            except Exception:
+                pass
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
             SELECT t.id, t.title, t.description, t.required_skills, t.expected_outcomes,
-                   t.author_user_id, u.full_name AS author_name, t.created_at
+                   t.author_user_id, u.full_name AS author_name, t.created_at,
+                   NULL::double precision AS score
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
             WHERE t.is_active = TRUE AND t.seeking_role = 'student'
             ORDER BY t.created_at DESC
             LIMIT %s
-            ''', (limit,)
+            ''', (limit,),
         )
-    return [dict(r) for r in cur.fetchall()]
+        return [dict(r) for r in cur.fetchall()]
 
 
-def get_roles_needing_students(conn, limit: int = 40) -> List[Dict[str, Any]]:
+def get_roles_needing_students(
+    conn,
+    limit: int = 40,
+    *,
+    query_vector: Optional[Sequence[float]] = None,
+) -> List[Dict[str, Any]]:
+    vector = _to_vector(query_vector)
+    if vector:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    '''
+                    SELECT r.id, r.name, r.description, r.required_skills, r.capacity,
+                           t.id AS topic_id, t.title AS topic_title, t.direction,
+                           t.author_user_id, u.full_name AS author_name,
+                           1.0 / (1.0 + (r.embeddings <-> %s)) AS score
+                    FROM roles r
+                    JOIN topics t ON t.id = r.topic_id AND t.is_active = TRUE AND t.seeking_role = 'student'
+                    JOIN users u ON u.id = t.author_user_id
+                    WHERE r.embeddings IS NOT NULL
+                    ORDER BY r.embeddings <-> %s
+                    LIMIT %s
+                    ''',
+                    (vector, vector, limit),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+        except Exception as exc:
+            try:
+                print(f"WARN: similar roles for student failed: {exc}")
+            except Exception:
+                pass
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
             SELECT r.id, r.name, r.description, r.required_skills, r.capacity,
                    t.id AS topic_id, t.title AS topic_title, t.direction,
-                   t.author_user_id, u.full_name AS author_name
+                   t.author_user_id, u.full_name AS author_name,
+                   NULL::double precision AS score
             FROM roles r
             JOIN topics t ON t.id = r.topic_id AND t.is_active = TRUE AND t.seeking_role = 'student'
             JOIN users u ON u.id = t.author_user_id
             ORDER BY t.created_at DESC, r.id ASC
             LIMIT %s
-            ''', (limit,)
+            ''', (limit,),
         )
         return [dict(r) for r in cur.fetchall()]
 
@@ -802,7 +983,8 @@ def handle_match_student(conn, student_user_id: int) -> Dict[str, Any]:
     # Enrich student with CV text
     student['cv'] = _cv_text_from_value(conn, student.get('cv'))
 
-    roles = get_roles_needing_students(conn, limit=40)
+    student_vector = _fetch_user_embedding(conn, student_user_id)
+    roles = get_roles_needing_students(conn, limit=40, query_vector=student_vector)
     if not roles:
         return {'status': 'ok', 'student_user_id': student_user_id, 'items': []}
 
@@ -869,18 +1051,52 @@ def get_supervisor(conn, supervisor_user_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-def get_topics_needing_supervisors(conn, limit: int = 20) -> List[Dict[str, Any]]:
+def get_topics_needing_supervisors(
+    conn,
+    limit: int = 20,
+    *,
+    query_vector: Optional[Sequence[float]] = None,
+) -> List[Dict[str, Any]]:
+    vector = _to_vector(query_vector)
+    if vector:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    '''
+                    SELECT t.id, t.title, t.description, t.required_skills, t.expected_outcomes,
+                           t.author_user_id, u.full_name AS author_name, t.created_at,
+                           1.0 / (1.0 + (t.embeddings <-> %s)) AS score
+                    FROM topics t
+                    JOIN users u ON u.id = t.author_user_id
+                    WHERE t.is_active = TRUE
+                      AND t.seeking_role = 'supervisor'
+                      AND t.embeddings IS NOT NULL
+                    ORDER BY t.embeddings <-> %s
+                    LIMIT %s
+                    ''',
+                    (vector, vector, limit),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+        except Exception as exc:
+            try:
+                print(f"WARN: similar topics for supervisor failed: {exc}")
+            except Exception:
+                pass
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
             SELECT t.id, t.title, t.description, t.required_skills, t.expected_outcomes,
-                   t.author_user_id, u.full_name AS author_name, t.created_at
+                   t.author_user_id, u.full_name AS author_name, t.created_at,
+                   NULL::double precision AS score
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
             WHERE t.is_active = TRUE AND t.seeking_role = 'supervisor'
             ORDER BY t.created_at DESC
             LIMIT %s
-            ''', (limit,)
+            ''', (limit,),
         )
         return [dict(r) for r in cur.fetchall()]
 
@@ -924,7 +1140,8 @@ def handle_match_supervisor_user(conn, supervisor_user_id: int) -> Dict[str, Any
     if not supervisor:
         return {"status": "error", "message": f"Supervisor #{supervisor_user_id} not found"}
 
-    topics = get_topics_needing_supervisors(conn, limit=20)
+    supervisor_vector = _fetch_user_embedding(conn, supervisor_user_id)
+    topics = get_topics_needing_supervisors(conn, limit=20, query_vector=supervisor_vector)
     if not topics:
         return {"status": "ok", "supervisor_user_id": supervisor_user_id, "items": []}
 

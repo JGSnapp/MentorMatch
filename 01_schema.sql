@@ -4,6 +4,9 @@
 
 BEGIN;
 
+-- Vector extension for semantic search (pgvector)
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- =====================
 -- Users & Profiles
 -- =====================
@@ -16,7 +19,7 @@ CREATE TABLE users (
   username        TEXT,
   is_confirmed    BOOLEAN NOT NULL DEFAULT FALSE,
   role            VARCHAR(20) NOT NULL, -- 'student' | 'supervisor' | 'admin'
-  embeddings      TEXT,
+  embeddings      VECTOR(1536),
   consent_personal BOOLEAN,
   consent_private  BOOLEAN,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -98,7 +101,7 @@ CREATE TABLE topics (
   required_skills   TEXT,
   direction         SMALLINT,                      -- 9 | 11 | 45 (опционально)
   seeking_role      VARCHAR(20) NOT NULL, -- 'student' | 'supervisor'
-  embeddings        TEXT,
+  embeddings        VECTOR(1536),
   cover_media_id    BIGINT REFERENCES media_files(id) ON DELETE SET NULL,
   approved_supervisor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   is_active         BOOLEAN NOT NULL DEFAULT TRUE,
@@ -110,6 +113,10 @@ CREATE INDEX idx_topics_author ON topics(author_user_id);
 CREATE INDEX idx_topics_seeking_role ON topics(seeking_role);
 CREATE INDEX idx_topics_active ON topics(is_active);
 CREATE INDEX idx_topics_direction ON topics(direction);
+
+-- Vector indexes for similarity search
+CREATE INDEX idx_users_embeddings ON users USING ivfflat (embeddings vector_cosine_ops);
+CREATE INDEX idx_topics_embeddings ON topics USING ivfflat (embeddings vector_cosine_ops);
 
 CREATE TABLE topic_candidates (
   topic_id      BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
@@ -153,12 +160,14 @@ CREATE TABLE roles (
   description     TEXT,
   required_skills TEXT,
   capacity        INTEGER,
+  embeddings      VECTOR(1536),
   approved_student_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_roles_topic ON roles(topic_id);
+CREATE INDEX idx_roles_embeddings ON roles USING ivfflat (embeddings vector_cosine_ops);
 
 -- Students recommended for a role (matching: role -> students)
 CREATE TABLE role_candidates (
