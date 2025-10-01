@@ -1,4 +1,4 @@
--- MentorMatch DB schema (PostgreSQL 16+)
+﻿-- MentorMatch DB schema (PostgreSQL 16+)
 -- This file is executed automatically by the official postgres image
 -- when mounted into /docker-entrypoint-initdb.d on first container start.
 
@@ -14,6 +14,7 @@ CREATE TABLE users (
   full_name       TEXT NOT NULL,
   email           TEXT,
   username        TEXT,
+  is_confirmed    BOOLEAN NOT NULL DEFAULT FALSE,
   role            VARCHAR(20) NOT NULL, -- 'student' | 'supervisor' | 'admin'
   embeddings      TEXT,
   consent_personal BOOLEAN,
@@ -41,13 +42,16 @@ CREATE TABLE student_profiles (
   groundwork      TEXT,
   wants_team      BOOLEAN,
   team_role       TEXT,
+
+  team_has        TEXT,
+
   team_needs      TEXT,
   apply_master    BOOLEAN,
   workplace       TEXT,
   preferred_team_track TEXT,
-  dev_track       BOOLEAN,
-  science_track   BOOLEAN,
-  startup_track   BOOLEAN,
+  dev_track       SMALLINT,
+  science_track   SMALLINT,
+  startup_track   SMALLINT,
   final_work_pref TEXT
 );
 
@@ -92,9 +96,11 @@ CREATE TABLE topics (
   description       TEXT,
   expected_outcomes TEXT,
   required_skills   TEXT,
+  direction         SMALLINT,                      -- 9 | 11 | 45 (опционально)
   seeking_role      VARCHAR(20) NOT NULL, -- 'student' | 'supervisor'
   embeddings        TEXT,
   cover_media_id    BIGINT REFERENCES media_files(id) ON DELETE SET NULL,
+  approved_supervisor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   is_active         BOOLEAN NOT NULL DEFAULT TRUE,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -103,6 +109,7 @@ CREATE TABLE topics (
 CREATE INDEX idx_topics_author ON topics(author_user_id);
 CREATE INDEX idx_topics_seeking_role ON topics(seeking_role);
 CREATE INDEX idx_topics_active ON topics(is_active);
+CREATE INDEX idx_topics_direction ON topics(direction);
 
 CREATE TABLE topic_candidates (
   topic_id      BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
@@ -117,6 +124,105 @@ CREATE TABLE topic_candidates (
 
 CREATE INDEX idx_tc_user ON topic_candidates(user_id);
 CREATE INDEX idx_tc_topic_score ON topic_candidates(topic_id, score DESC);
+
+-- Mirror table: topics recommended to users (student or supervisor)
+-- Stores top-N topics per user (result of matching initiated by user profile)
+CREATE TABLE user_candidates (
+  user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  topic_id     BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+  score        DOUBLE PRECISION,
+  is_primary   BOOLEAN NOT NULL DEFAULT FALSE,
+  approved     BOOLEAN NOT NULL DEFAULT FALSE,
+  rank         SMALLINT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, topic_id)
+);
+
+CREATE INDEX idx_uc_topic ON user_candidates(topic_id);
+CREATE INDEX idx_uc_user_score ON user_candidates(user_id, score DESC);
+
+-- ============
+-- Roles
+-- ============
+
+-- Roles per topic
+CREATE TABLE roles (
+  id              BIGSERIAL PRIMARY KEY,
+  topic_id        BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  description     TEXT,
+  required_skills TEXT,
+  capacity        INTEGER,
+  approved_student_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_roles_topic ON roles(topic_id);
+
+-- Students recommended for a role (matching: role -> students)
+CREATE TABLE role_candidates (
+  role_id     BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- student
+  score       DOUBLE PRECISION,
+  is_primary  BOOLEAN NOT NULL DEFAULT FALSE,
+  approved    BOOLEAN NOT NULL DEFAULT FALSE,
+  rank        SMALLINT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (role_id, user_id)
+);
+
+CREATE INDEX idx_rc_role_score ON role_candidates(role_id, score DESC);
+
+-- Roles recommended for a student (matching: student -> roles)
+CREATE TABLE student_candidates (
+  user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- student
+  role_id     BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  score       DOUBLE PRECISION,
+  is_primary  BOOLEAN NOT NULL DEFAULT FALSE,
+  approved    BOOLEAN NOT NULL DEFAULT FALSE,
+  rank        SMALLINT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, role_id)
+);
+
+CREATE INDEX idx_sc_user_score ON student_candidates(user_id, score DESC);
+
+-- Topics recommended for a supervisor (matching: supervisor -> topics)
+CREATE TABLE supervisor_candidates (
+  user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- supervisor
+  topic_id    BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+  score       DOUBLE PRECISION,
+  is_primary  BOOLEAN NOT NULL DEFAULT FALSE,
+  approved    BOOLEAN NOT NULL DEFAULT FALSE,
+  rank        SMALLINT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, topic_id)
+);
+
+CREATE INDEX idx_sc_topic ON supervisor_candidates(topic_id);
+CREATE INDEX idx_sc_user_score2 ON supervisor_candidates(user_id, score DESC);
+
+-- =====================
+-- Messages (Requests)
+-- =====================
+
+CREATE TABLE messages (
+  id               BIGSERIAL PRIMARY KEY,
+  sender_user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  receiver_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  topic_id         BIGINT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+  role_id          BIGINT REFERENCES roles(id) ON DELETE SET NULL,
+  body             TEXT NOT NULL,
+  status           VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending|accepted|rejected|canceled
+  answer           TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  responded_at     TIMESTAMPTZ
+);
+
+CREATE INDEX idx_messages_receiver ON messages(receiver_user_id, status);
+CREATE INDEX idx_messages_sender ON messages(sender_user_id, status);
+CREATE INDEX idx_messages_topic ON messages(topic_id);
 
 -- =====================
 -- Assignments & Submissions

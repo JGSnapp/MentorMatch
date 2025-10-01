@@ -18,8 +18,9 @@ services:
         - DATABASE_URL=${DATABASE_URL}
         - SPREADSHEET_ID=${SPREADSHEET_ID}
         - SERVICE_ACCOUNT_FILE=${SERVICE_ACCOUNT_FILE}
+        - PAIRS_SPREADSHEET_ID=${PAIRS_SPREADSHEET_ID}
         - SERVER_URL=${SERVER_URL}
-        
+        - BOT_API_URL=${BOT_API_URL:-http://bot:5000}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
       volumes:
         - ./server:/app
@@ -37,6 +38,7 @@ services:
         - SERVER_URL=http://server:8000
       volumes:
         - ./bot:/app
+        - ./templates:/app/templates:ro
       depends_on:
         - server
       restart: unless-stopped 
