@@ -13,7 +13,7 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 from media_store import persist_media_from_url, MEDIA_ROOT
-from utils import parse_optional_int, normalize_optional_str
+from utils import parse_optional_int, normalize_optional_str, resolve_service_account_path
 
 from parse_gform import fetch_normalized_rows, fetch_supervisor_rows
 from matching import handle_match, handle_match_student, handle_match_supervisor_user
@@ -21,12 +21,28 @@ from matching import handle_match_role
 from matching import client as LLM_CLIENT  # reuse configured OpenAI client
 from matching import PROXY_MODEL
 from admin import create_admin_router
-from sheet_pairs import export_pairs_from_db
+from sheet_pairs import sync_roles_sheet
+
+
+
+
+def _configure_logging() -> int:
+    level_name = (os.getenv('LOG_LEVEL') or 'INFO').upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+        root_logger.addHandler(handler)
+    root_logger.setLevel(level)
+    return level
 
 
 load_dotenv()
+LOG_LEVEL = _configure_logging()
 
 logger = logging.getLogger(__name__)
+logger.setLevel(LOG_LEVEL)
 
 def build_db_dsn() -> str:
     dsn = os.getenv('DATABASE_URL')
@@ -160,26 +176,6 @@ def _extract_tg_username(raw: Optional[str]) -> Optional[str]:
         return m.group(1)
     s = re.sub(r"[^A-Za-z0-9_]", "", s)
     return s or None
-
-
-def _resolve_service_account_path(p: Optional[str]) -> Optional[str]:
-    if not p:
-        return None
-    try:
-        path = Path(p)
-        if path.is_absolute() and path.exists():
-            return str(path)
-        candidates = [
-            Path(p),
-            Path(__file__).parent / p,              # /app/<p>
-            Path(__file__).parent.parent / p,       # repo root candidate
-        ]
-        for c in candidates:
-            if c.exists():
-                return str(c)
-    except Exception:
-        pass
-    return p
 
 
 def _read_csv_rows(p: Path) -> List[Dict[str, str]]:
@@ -447,6 +443,7 @@ async def _startup_event():
     except Exception as e:
         print(f"Startup migration warning (user_candidates): {e}")
     _maybe_test_import()
+    sync_roles_sheet(get_conn)
 
 
 @app.get('/api/topics', response_class=JSONResponse)
@@ -663,7 +660,7 @@ def api_get_sheets_status():
 @app.get('/api/sheets-config', response_class=JSONResponse)
 def api_get_sheets_config():
     spreadsheet_id = os.getenv('SPREADSHEET_ID')
-    service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE'))
+    service_account_file = resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE'))
     if spreadsheet_id and service_account_file:
         # Validate that the service account file actually exists in the container
         try:
@@ -737,16 +734,6 @@ def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[str] = Form(None
             (tg_id_val, link, user_id),
         )
         conn.commit()
-    # Best-effort export after status change (especially on accept)
-    try:
-        if act == 'accept':
-            pairs_sheet = os.getenv('PAIRS_SPREADSHEET_ID')
-            service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
-            if pairs_sheet:
-                with get_conn() as conn2:
-                    export_pairs_from_db(conn2, pairs_sheet, service_account_file)
-    except Exception:
-        pass
     return {'status': 'ok'}
 
 
@@ -1001,6 +988,14 @@ def api_add_role(
     required_skills: Optional[str] = Form(None),
     capacity: Optional[str] = Form(None),
 ):
+    logger.info(
+        'api_add_role request: topic_id=%s, name=%s, description_len=%s, required_len=%s, capacity_raw=%s',
+        topic_id,
+        _shorten(name, 80),
+        len(description or ''),
+        len(required_skills or ''),
+        capacity,
+    )
     with get_conn() as conn, conn.cursor() as cur:
         capacity_val = parse_optional_int(capacity)
         name_clean = (name or '').strip()
@@ -1008,6 +1003,13 @@ def api_add_role(
             raise HTTPException(status_code=400, detail='name is required')
         description_val = normalize_optional_str(description)
         required_val = normalize_optional_str(required_skills)
+        logger.debug(
+            'api_add_role normalized: name=%s, capacity=%s, description_len=%s, required_len=%s',
+            name_clean,
+            capacity_val,
+            len(description_val or ''),
+            len(required_val or ''),
+        )
         cur.execute(
             '''
             INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
@@ -1017,15 +1019,14 @@ def api_add_role(
         )
         rid = cur.fetchone()[0]
         conn.commit()
-    # Best-effort export
-    try:
-        pairs_sheet = os.getenv('PAIRS_SPREADSHEET_ID')
-        service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
-        if pairs_sheet:
-            with get_conn() as conn2:
-                export_pairs_from_db(conn2, pairs_sheet, service_account_file)
-    except Exception as _e:
-        pass
+        logger.info(
+            'api_add_role inserted role_id=%s for topic=%s (capacity=%s)',
+            rid,
+            topic_id,
+            capacity_val,
+        )
+    sync_result = sync_roles_sheet(get_conn)
+    logger.info('api_add_role: roles sheet sync triggered=%s', sync_result)
     return {'status': 'ok', 'role_id': rid}
 
 
@@ -1182,7 +1183,7 @@ def api_update_role(
 @app.post('/api/import-sheet', response_class=JSONResponse)
 def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
     try:
-        service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
+        service_account_file = resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
         # Fast TLS reachability check for clearer SSL errors
         try:
             import requests as _requests
@@ -1523,7 +1524,7 @@ def _fallback_extract_topics(text: str) -> List[Dict[str, Any]]:
 @app.post('/api/import-supervisors', response_class=JSONResponse)
 def api_import_supervisors(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
     try:
-        service_account_file = _resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
+        service_account_file = resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
         rows = fetch_supervisor_rows(
             spreadsheet_id=spreadsheet_id,
             sheet_name=sheet_name,  # default: 2Ð¿â•§ Ð¿â•©Ð¿â•¦Ñâ”‚Ñâ”Œ, Ð¿â•£Ñâ”‚Ð¿â•©Ð¿â•¦ None
@@ -2096,6 +2097,7 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
     if act not in ('accept', 'reject', 'cancel'):
         return {'status': 'error', 'message': 'invalid action'}
     notify_ctx: Optional[Dict[str, Any]] = None
+    needs_export = False
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         msg = _fetch_message_context(cur, message_id)
         if not msg:
@@ -2123,6 +2125,7 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
                         'UPDATE roles SET approved_student_user_id=%s WHERE id=%s',
                         (approved_student_id, msg.get('role_id')),
                     )
+                    needs_export = True
             else:
                 approved_supervisor_id = None
                 if sender_role == 'supervisor':
@@ -2136,12 +2139,31 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
                         'UPDATE topics SET approved_supervisor_user_id=%s WHERE id=%s',
                         (approved_supervisor_id, msg.get('topic_id')),
                     )
+                    needs_export = True
+        else:
+            actor_id = responder_user_id if act == 'reject' else msg.get('sender_user_id')
+            actor_role_raw = msg.get('receiver_role') if act == 'reject' else msg.get('sender_role')
+            actor_role = (actor_role_raw or '').strip().lower()
+            if msg.get('role_id') and actor_role == 'student' and actor_id:
+                cur.execute('SELECT approved_student_user_id FROM roles WHERE id=%s', (msg.get('role_id'),))
+                row = cur.fetchone()
+                if row and row.get('approved_student_user_id') == actor_id:
+                    cur.execute('UPDATE roles SET approved_student_user_id=NULL WHERE id=%s', (msg.get('role_id'),))
+                    needs_export = True
+            elif not msg.get('role_id') and actor_role == 'supervisor' and actor_id:
+                cur.execute('SELECT approved_supervisor_user_id FROM topics WHERE id=%s', (msg.get('topic_id'),))
+                row = cur.fetchone()
+                if row and row.get('approved_supervisor_user_id') == actor_id:
+                    cur.execute('UPDATE topics SET approved_supervisor_user_id=NULL WHERE id=%s', (msg.get('topic_id'),))
+                    needs_export = True
         conn.commit()
         msg['status'] = status
         msg['answer'] = answer or None
         notify_ctx = msg
     if notify_ctx:
         _notify_application_update(notify_ctx, act)
+    if needs_export:
+        sync_roles_sheet(get_conn)
     return {'status': 'ok'}
 
 
@@ -2158,6 +2180,7 @@ def api_clear_role_approved(role_id: int, by_user_id: int = Form(...)):
             return {'status': 'error', 'message': 'not allowed'}
         cur.execute('UPDATE roles SET approved_student_user_id=NULL WHERE id=%s', (role_id,))
         conn.commit()
+    sync_roles_sheet(get_conn)
     return {'status': 'ok'}
 
 
@@ -2173,6 +2196,7 @@ def api_clear_topic_supervisor(topic_id: int, by_user_id: int = Form(...)):
             return {'status': 'error', 'message': 'not allowed'}
         cur.execute('UPDATE topics SET approved_supervisor_user_id=NULL WHERE id=%s', (topic_id,))
         conn.commit()
+    sync_roles_sheet(get_conn)
     return {'status': 'ok'}
 
 

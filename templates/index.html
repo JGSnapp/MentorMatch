@@ -26,6 +26,15 @@
     .edit-link { margin-left: 10px; font-size: 0.9rem; }
     .edit-link a { color: #2563eb; text-decoration: none; border: 1px solid #cbd5e1; padding: 2px 8px; border-radius: 6px; }
     .edit-link a:hover { background: #eff6ff; }
+    .topic-block { border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 12px; }
+    .topic-block:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+    .topic-header { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+    .topic-supervisor { margin-bottom: 12px; }
+    .roles-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .role-item { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; background: #f8fafc; }
+    .role-item label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+    .role-item select { font-weight: 400; }
+    .topic-form-actions { margin-top: 16px; }
   </style>
 </head>
 <body>
@@ -46,17 +55,6 @@
         </label>
         <button type='submit'>Импортировать</button>
       </form>
-    </div>
-
-    <div class='card'>
-      <h3>Выгрузить пары (Тема–Роль–Студент–Руководитель) в Google Sheets</h3>
-      <form method='post' action='/export-pairs'>
-        <label>Pairs Spreadsheet ID
-          <input type='text' name='pairs_spreadsheet_id' value='{{ env_pairs_spreadsheet_id }}' placeholder='если пусто — будет использован PAIRS_SPREADSHEET_ID из .env' />
-        </label>
-        <button type='submit'>Выгрузить сейчас</button>
-      </form>
-      <p class='muted'>Будут выгружены все роли с утверждённым студентом (если есть) и руководителем (утверждённый или автор темы).</p>
     </div>
 
     <div class='card'>
@@ -95,6 +93,58 @@
         <button type='submit'>Добавить тему</button>
       </form>
     </div>
+  </div>
+
+  <div class='card' style='margin-top:16px;'>
+    <h3>Назначения ролей и руководителей</h3>
+    {% if role_topics %}
+      <form method='post' action='/save-approvals'>
+        {% for topic in role_topics %}
+          <div class='topic-block'>
+            <div class='topic-header'>
+              <strong>{{ topic.title or ('Тема #' ~ topic.id) }}</strong>
+              <span class='muted'>Автор: {{ topic.author_name or ('#' ~ topic.author_user_id) }}</span>
+            </div>
+            <div class='topic-supervisor'>
+              <label>Руководитель
+                <select name='topic_supervisor_{{ topic.id }}' {% if topic.supervisor_locked %}disabled{% endif %}>
+                  <option value=''>— Не выбран —</option>
+                  {% for sup in all_supervisors %}
+                    <option value='{{ sup.id }}' {% if sup.id == topic.approved_supervisor_user_id %}selected{% endif %}>{{ sup.full_name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              {% if topic.supervisor_locked %}
+                <p class='muted'>Руководитель совпадает с автором темы и не может быть изменён.</p>
+              {% endif %}
+            </div>
+            <div class='roles-list'>
+              {% for role in topic.roles %}
+                <div class='role-item'>
+                  <label>
+                    <span>{{ role.name or ('Роль #' ~ role.id) }}</span>
+                    <select name='role_student_{{ role.id }}'>
+                      <option value=''>— Не выбран —</option>
+                      {% for student in all_students %}
+                        <option value='{{ student.id }}' {% if student.id == role.approved_student_user_id %}selected{% endif %}>{{ student.full_name }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                  {% if role.approved_student_name %}
+                    <p class='muted'>Текущий студент: {{ role.approved_student_name }}</p>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        {% endfor %}
+        <div class='topic-form-actions'>
+          <button type='submit'>Сохранить</button>
+        </div>
+      </form>
+    {% else %}
+      <p class='muted'>Пока нет созданных ролей.</p>
+    {% endif %}
   </div>
 
   <div class='card' style='margin-top:16px;'>
