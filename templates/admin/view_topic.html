@@ -3,14 +3,18 @@
 {% block header_meta %}
 <p class="muted">Подробности темы и рекомендации</p>
 {% endblock %}
+{% block header_actions %}
+  <a class="btn-secondary" href="/?tab=topics">К списку тем</a>
+  <a class="btn-secondary" href="/add-role?topic_id={{ topic.id }}">Добавить роль</a>
+{% endblock %}
 {% block content %}
-  <section class="surface stack">
+  <section class="surface stack topic-block">
     {% if msg %}
       <div class="message">{{ msg }}</div>
     {% endif %}
     <div class="stack" style="gap:18px;">
-      <div>
-        <div class="badge">Тема #{{ topic.id }}</div>
+      <div class="topic-summary">
+        <div class="badge topic-id">Тема #{{ topic.id }}</div>
         <h2 style="margin:8px 0 0; font-size:1.5rem;">{{ topic.title or 'Без названия' }}</h2>
       </div>
       <div class="muted">Автор: {{ topic.author }}</div>
@@ -34,7 +38,7 @@
     </div>
   </section>
 
-  <section class="surface stack">
+  <section class="surface stack topic-block">
     <h3 class="section-title">Роли темы</h3>
     <div class="role-grid">
       {% for role in roles %}
@@ -43,6 +47,12 @@
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <strong>{{ role.name or ('Роль #' ~ role.id) }}</strong>
               <a class="muted" href="/role/{{ role.id }}">Подробнее →</a>
+            </div>
+            <div class="role-actions">
+              <a class="btn-secondary" href="/role/{{ role.id }}/edit">Редактировать</a>
+              <form method="post" action="/role/{{ role.id }}/delete" style="margin:0;" onsubmit="return confirm('Удалить роль?');">
+                <button class="btn-danger" type="submit">Удалить</button>
+              </form>
             </div>
             <div class="muted">Навыки: {{ role.required_skills or '—' }}</div>
             <div class="muted">Вместимость: {{ role.capacity or '—' }}</div>
@@ -57,7 +67,7 @@
     </div>
   </section>
 
-  <section class="surface stack">
+  <section class="surface stack topic-block">
     <h3 class="section-title">Подходящие руководители</h3>
     <div class="stack">
       {% for cand in supervisor_candidates %}

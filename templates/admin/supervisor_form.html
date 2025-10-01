@@ -3,6 +3,9 @@
 {% block header_meta %}
 <p class="muted">{{ title }}</p>
 {% endblock %}
+{% block header_actions %}
+  <a class="btn-secondary" href="/?tab=supervisors">Назад</a>
+{% endblock %}
 {% block content %}
   <section class="surface stack">
     {% if msg %}

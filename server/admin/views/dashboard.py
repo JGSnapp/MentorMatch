@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import psycopg2.extras
 from fastapi import APIRouter, Request, Body
@@ -16,7 +16,7 @@ from ..context import AdminContext
 PAGE_LIMIT = 20
 
 
-def _fetch_students(conn, offset: int, limit: int) -> List[Dict[str, Any]]:
+def _fetch_students(conn, offset: int, limit: int) -> Tuple[List[Dict[str, Any]], bool]:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -28,12 +28,13 @@ def _fetch_students(conn, offset: int, limit: int) -> List[Dict[str, Any]]:
             ORDER BY u.created_at DESC
             OFFSET %s LIMIT %s
             """,
-            (offset, limit),
+            (offset, limit + 1),
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
+    return rows[:limit], len(rows) > limit
 
 
-def _fetch_supervisors(conn, offset: int, limit: int) -> List[Dict[str, Any]]:
+def _fetch_supervisors(conn, offset: int, limit: int) -> Tuple[List[Dict[str, Any]], bool]:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -45,12 +46,13 @@ def _fetch_supervisors(conn, offset: int, limit: int) -> List[Dict[str, Any]]:
             ORDER BY u.created_at DESC
             OFFSET %s LIMIT %s
             """,
-            (offset, limit),
+            (offset, limit + 1),
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
+    return rows[:limit], len(rows) > limit
 
 
-def _fetch_topics(conn, offset: int, limit: int) -> List[Dict[str, Any]]:
+def _fetch_topics(conn, offset: int, limit: int) -> Tuple[List[Dict[str, Any]], bool]:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -61,18 +63,20 @@ def _fetch_topics(conn, offset: int, limit: int) -> List[Dict[str, Any]]:
             ORDER BY t.created_at DESC
             OFFSET %s LIMIT %s
             """,
-            (offset, limit),
+            (offset, limit + 1),
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
+    return rows[:limit], len(rows) > limit
 
 
-def _fetch_role_topics(conn) -> List[Dict[str, Any]]:
+def _fetch_role_topics(conn, topic_ids: Optional[Sequence[int]] = None) -> List[Dict[str, Any]]:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
+        params: Tuple[Any, ...]
+        query = (
             """
             SELECT r.id AS role_id,
                    r.name AS role_name,
-                   r.topic_id,
+                   t.id AS topic_id,
                    r.approved_student_user_id,
                    stu.full_name AS approved_student_name,
                    t.title AS topic_title,
@@ -80,14 +84,22 @@ def _fetch_role_topics(conn) -> List[Dict[str, Any]]:
                    author.full_name AS author_name,
                    t.approved_supervisor_user_id,
                    sup.full_name AS approved_supervisor_name
-            FROM roles r
-            JOIN topics t ON t.id = r.topic_id
+            FROM topics t
+            LEFT JOIN roles r ON r.topic_id = t.id
             JOIN users author ON author.id = t.author_user_id
             LEFT JOIN users stu ON stu.id = r.approved_student_user_id
             LEFT JOIN users sup ON sup.id = t.approved_supervisor_user_id
-            ORDER BY t.created_at DESC, r.id ASC
-            """,
+            {where_clause}
+            ORDER BY t.created_at DESC, r.id ASC NULLS LAST
+            """
         )
+        if topic_ids:
+            where_clause = "WHERE t.id = ANY(%s)"
+            params = (list(topic_ids),)
+        else:
+            where_clause = ""
+            params = tuple()
+        cur.execute(query.format(where_clause=where_clause), params)
         rows = cur.fetchall()
 
     topic_map: Dict[int, Dict[str, Any]] = {}
@@ -112,14 +124,19 @@ def _fetch_role_topics(conn) -> List[Dict[str, Any]]:
             }
             topic_map[topic_id] = topic
             topic_order.append(topic_id)
-        topic["roles"].append(
-            {
-                "id": row.get("role_id"),
-                "name": row.get("role_name"),
-                "approved_student_user_id": row.get("approved_student_user_id"),
-                "approved_student_name": row.get("approved_student_name"),
-            }
-        )
+        role_id = row.get("role_id")
+        if role_id is not None:
+            topic["roles"].append(
+                {
+                    "id": role_id,
+                    "name": row.get("role_name"),
+                    "approved_student_user_id": row.get("approved_student_user_id"),
+                    "approved_student_name": row.get("approved_student_name"),
+                }
+            )
+    if topic_ids:
+        ordered = [topic_map[tid] for tid in topic_ids if tid in topic_map]
+        return ordered
     return [topic_map[tid] for tid in topic_order]
 
 
@@ -139,33 +156,39 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         page: int = 0,
         msg: Optional[str] = None,
     ):
-        current_tab = tab if tab in {"topics", "roles", "students", "supervisors"} else "topics"
-        offset = max(page, 0) * PAGE_LIMIT
+        allowed_tabs = {"topics", "students", "supervisors"}
+        current_tab = tab if tab in allowed_tabs else "topics"
+        current_page = max(page, 0)
+        offset = current_page * PAGE_LIMIT
         items: List[Dict[str, Any]] = []
         role_topics: List[Dict[str, Any]] = []
         all_students: List[Dict[str, Any]] = []
         all_supervisors: List[Dict[str, Any]] = []
+        has_next = False
 
         with ctx.get_conn() as conn:
             if current_tab == "students":
-                items = _fetch_students(conn, offset, PAGE_LIMIT)
+                items, has_next = _fetch_students(conn, offset, PAGE_LIMIT)
             elif current_tab == "supervisors":
-                items = _fetch_supervisors(conn, offset, PAGE_LIMIT)
+                items, has_next = _fetch_supervisors(conn, offset, PAGE_LIMIT)
             else:
-                items = _fetch_topics(conn, offset, PAGE_LIMIT)
-
-            if current_tab in {"roles", "topics"}:
-                role_topics = _fetch_role_topics(conn)
+                items, has_next = _fetch_topics(conn, offset, PAGE_LIMIT)
+                topic_ids = [topic["id"] for topic in items]
+                if topic_ids:
+                    role_topics = _fetch_role_topics(conn, topic_ids)
+                else:
+                    role_topics = []
                 all_students = _fetch_people(conn, "student")
                 all_supervisors = _fetch_people(conn, "supervisor")
         role_topics_map = {t["id"]: t for t in role_topics}
+        has_prev = current_page > 0
 
         return templates.TemplateResponse(
             "admin/dashboard.html",
             {
                 "request": request,
                 "tab": current_tab,
-                "page": max(page, 0),
+                "page": current_page,
                 "items": items,
                 "role_topics": role_topics,
                 "role_topics_map": role_topics_map,
@@ -173,6 +196,8 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 "all_supervisors": all_supervisors,
                 "msg": msg,
                 "limit": PAGE_LIMIT,
+                "has_prev": has_prev,
+                "has_next": has_next,
                 "spreadsheet_id": os.getenv("SPREADSHEET_ID", ""),
             },
         )
@@ -198,7 +223,7 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
 
         message = _apply_assignment_updates(ctx, role_updates, topic_updates)
         quoted = urllib.parse.quote(message)
-        return RedirectResponse(url=f"/?msg={quoted}&tab=roles", status_code=303)
+        return RedirectResponse(url=f"/?msg={quoted}&tab=topics", status_code=303)
 
     @router.post("/assignments", response_class=JSONResponse)
     async def update_assignment(payload: Dict[str, Any] = Body(...)):

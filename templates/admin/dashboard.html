@@ -72,7 +72,7 @@
   .topic-card {
     border: 1px solid rgba(148, 163, 184, 0.1);
     border-radius: 16px;
-    padding: 18px;
+    padding: 48px 24px 24px;
     background: rgba(15, 23, 42, 0.65);
     display: flex;
     flex-direction: column;
@@ -82,6 +82,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    padding-right: 160px;
   }
   .topic-actions {
     display: flex;
@@ -100,12 +101,11 @@
 </style>
 {% endblock %}
 {% block header_meta %}
-<p class="muted">Управление темами, ролями, студентами и руководителями</p>
+<p class="muted">Управление темами, студентами и руководителями</p>
 {% endblock %}
 {% block content %}
   <nav class="tabs">
     <a href="/?tab=topics" class="{{ 'active' if tab == 'topics' else '' }}">Темы</a>
-    <a href="/?tab=roles" class="{{ 'active' if tab == 'roles' else '' }}">Роли</a>
     <a href="/?tab=students" class="{{ 'active' if tab == 'students' else '' }}">Студенты</a>
     <a href="/?tab=supervisors" class="{{ 'active' if tab == 'supervisors' else '' }}">Руководители</a>
   </nav>
@@ -154,8 +154,8 @@
         </table>
       </div>
       <div class="topic-actions">
-        <a class="btn-secondary" href="/?tab=students&page={{ page - 1 }}" {% if page <= 0 %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
-        <a class="btn-secondary" href="/?tab=students&page={{ page + 1 }}">Вперёд</a>
+        <a class="btn-secondary" href="/?tab=students&page={{ page - 1 }}" {% if not has_prev %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
+        <a class="btn-secondary" href="/?tab=students&page={{ page + 1 }}" {% if not has_next %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Вперёд</a>
       </div>
     </section>
   {% elif tab == 'supervisors' %}
@@ -199,64 +199,8 @@
         </table>
       </div>
       <div class="topic-actions">
-        <a class="btn-secondary" href="/?tab=supervisors&page={{ page - 1 }}" {% if page <= 0 %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
-        <a class="btn-secondary" href="/?tab=supervisors&page={{ page + 1 }}">Вперёд</a>
-      </div>
-    </section>
-  {% elif tab == 'roles' %}
-    <section class="surface stack">
-      <div class="stack">
-        {% for topic in role_topics %}
-          <div class="topic-card">
-            <header>
-              <div>
-                <div class="badge">Тема #{{ topic.id }}</div>
-                <h2 style="margin: 4px 0 0; font-size: 1.2rem;">{{ topic.title or 'Без названия' }}</h2>
-              </div>
-              <div class="muted">Автор: {{ topic.author_name or ('#' ~ topic.author_user_id) }}</div>
-              <label>
-                <span class="muted">Руководитель</span>
-                <select data-supervisor-select data-topic-id="{{ topic.id }}" {% if topic.supervisor_locked %}disabled{% endif %}>
-                  <option value="">— Не выбран —</option>
-                  {% for sup in all_supervisors %}
-                    <option value="{{ sup.id }}" {% if sup.id == topic.approved_supervisor_user_id %}selected{% endif %}>{{ sup.full_name }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-              {% if topic.supervisor_locked %}
-                <p class="muted">Руководитель совпадает с автором и не может быть изменён.</p>
-              {% endif %}
-            </header>
-            <div class="role-grid">
-              {% for role in topic.roles %}
-                <div class="surface" style="padding:16px;">
-                  <div class="stack">
-                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-                      <strong>{{ role.name or ('Роль #' ~ role.id) }}</strong>
-                      <a href="/role/{{ role.id }}" class="muted">Подробнее →</a>
-                    </div>
-                    <label>
-                      <span class="muted">Студент</span>
-                      <select data-role-select data-role-id="{{ role.id }}">
-                        <option value="">— Не выбран —</option>
-                        {% for student in all_students %}
-                          <option value="{{ student.id }}" {% if student.id == role.approved_student_user_id %}selected{% endif %}>{{ student.full_name }}</option>
-                        {% endfor %}
-                      </select>
-                    </label>
-                    {% if role.approved_student_name %}
-                      <div class="muted">Назначен: {{ role.approved_student_name }}</div>
-                    {% endif %}
-                  </div>
-                </div>
-              {% else %}
-                <p class="muted">Для темы ещё не созданы роли.</p>
-              {% endfor %}
-            </div>
-          </div>
-        {% else %}
-          <p class="muted">Ролей пока нет.</p>
-        {% endfor %}
+        <a class="btn-secondary" href="/?tab=supervisors&page={{ page - 1 }}" {% if not has_prev %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
+        <a class="btn-secondary" href="/?tab=supervisors&page={{ page + 1 }}" {% if not has_next %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Вперёд</a>
       </div>
     </section>
   {% else %}
@@ -267,10 +211,10 @@
       <div class="stack">
         {% for topic in items %}
           {% set topic_meta = role_topics_map.get(topic.id) %}
-          <div class="topic-card">
+          <div class="topic-card topic-block">
             <header>
               <div>
-                <div class="badge">Тема #{{ topic.id }}</div>
+                <div class="badge topic-id">Тема #{{ topic.id }}</div>
                 <h2 style="margin: 4px 0 0; font-size: 1.2rem;">{{ topic.title or 'Без названия' }}</h2>
               </div>
               <div class="muted">Автор: {{ topic_meta.author_name if topic_meta else topic.author }}</div>
@@ -291,11 +235,38 @@
             </header>
             <div class="muted">Кого ищем: {{ topic.seeking_role }}{% if topic.direction %}, направление {{ topic.direction }}{% endif %}</div>
             {% if topic_meta and topic_meta.roles %}
-              <div class="chip-list">
+              <div class="role-grid">
                 {% for role in topic_meta.roles %}
-                  <a class="chip" href="/role/{{ role.id }}">{{ role.name or ('Роль #' ~ role.id) }}</a>
+                  <div class="surface" style="padding:16px;">
+                    <div class="stack">
+                      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                        <strong>{{ role.name or ('Роль #' ~ role.id) }}</strong>
+                        <a href="/role/{{ role.id }}" class="muted">Подробнее →</a>
+                      </div>
+                      <div class="role-actions">
+                        <a class="btn-secondary" href="/role/{{ role.id }}/edit">Редактировать</a>
+                        <form method="post" action="/role/{{ role.id }}/delete" style="margin:0;" onsubmit="return confirm('Удалить роль?');">
+                          <button class="btn-danger" type="submit">Удалить</button>
+                        </form>
+                      </div>
+                      <label>
+                        <span class="muted">Студент</span>
+                        <select data-role-select data-role-id="{{ role.id }}">
+                          <option value="">— Не выбран —</option>
+                          {% for student in all_students %}
+                            <option value="{{ student.id }}" {% if student.id == role.approved_student_user_id %}selected{% endif %}>{{ student.full_name }}</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      {% if role.approved_student_name %}
+                        <div class="muted">Назначен: {{ role.approved_student_name }}</div>
+                      {% endif %}
+                    </div>
+                  </div>
                 {% endfor %}
               </div>
+            {% else %}
+              <p class="muted">Для темы ещё не созданы роли.</p>
             {% endif %}
             <div class="topic-actions">
               <a class="btn-secondary" href="/edit-topic/{{ topic.id }}">Редактировать</a>
@@ -308,6 +279,10 @@
         {% else %}
           <p class="muted">Тем пока нет.</p>
         {% endfor %}
+      </div>
+      <div class="topic-actions">
+        <a class="btn-secondary" href="/?tab=topics&page={{ page - 1 }}" {% if not has_prev %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
+        <a class="btn-secondary" href="/?tab=topics&page={{ page + 1 }}" {% if not has_next %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Вперёд</a>
       </div>
     </section>
   {% endif %}

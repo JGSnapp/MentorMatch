@@ -261,11 +261,95 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 '''
                 INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, now(), now())
-                '''
-,                (topic_id, name.strip(), (description or None), (required_skills or None), capacity_val),
+                ''',
+                (
+                    topic_id,
+                    name.strip(),
+                    description or None,
+                    required_skills or None,
+                    capacity_val,
+                ),
             )
         sync_roles_sheet(ctx.get_conn)
-        return RedirectResponse(url=f'/topic/{topic_id}?msg=Роль добавлена', status_code=303)
+        notice = urllib.parse.quote('Роль добавлена')
+        return RedirectResponse(url=f'/topic/{topic_id}?msg={notice}', status_code=303)
+
+    @router.get('/role/{role_id}/edit', response_class=HTMLResponse)
+    def edit_role(request: Request, role_id: int, msg: Optional[str] = None):
+        with ctx.get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                '''
+                SELECT r.*, t.title AS topic_title
+                FROM roles r
+                JOIN topics t ON t.id = r.topic_id
+                WHERE r.id = %s
+                ''',
+                (role_id,),
+            )
+            role = cur.fetchone()
+            if not role:
+                notice = urllib.parse.quote('???? ?? ???????')
+                return RedirectResponse(url=f'/?tab=topics&msg={notice}', status_code=303)
+        role_data = dict(role)
+        topic_info = {'id': role_data['topic_id'], 'title': role_data['topic_title']}
+        return templates.TemplateResponse(
+            'admin/role_form.html',
+            {
+                'request': request,
+                'topic': topic_info,
+                'role': role_data,
+                'form_action': '/update-role',
+                'submit_label': '????????? ????',
+                'page_title': f'???? #{role_id}: ??????????????',
+                'msg': msg,
+            },
+        )
+
+    @router.post('/update-role')
+    def update_role(
+        request: Request,
+        role_id: int = Form(...),
+        name: str = Form(...),
+        description: Optional[str] = Form(None),
+        required_skills: Optional[str] = Form(None),
+        capacity: Optional[str] = Form(None),
+    ):
+        with ctx.get_conn() as conn, conn.cursor() as cur:
+            capacity_val = parse_optional_int(capacity)
+            cur.execute(
+                '''
+                UPDATE roles
+                SET name=%s,
+                    description=%s,
+                    required_skills=%s,
+                    capacity=%s,
+                    updated_at=now()
+                WHERE id=%s
+                RETURNING topic_id
+                ''',
+                (name.strip(), (description or None), (required_skills or None), capacity_val, role_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                notice = urllib.parse.quote('???? ?? ???????')
+                return RedirectResponse(url=f'/?tab=topics&msg={notice}', status_code=303)
+            topic_id_value = row[0]
+        sync_roles_sheet(ctx.get_conn)
+        notice = urllib.parse.quote('???? ?????????')
+        return RedirectResponse(url=f'/topic/{topic_id_value}?msg={notice}', status_code=303)
+
+    @router.post('/role/{role_id}/delete')
+    def delete_role(request: Request, role_id: int):
+        with ctx.get_conn() as conn, conn.cursor() as cur:
+            cur.execute('DELETE FROM roles WHERE id=%s RETURNING topic_id', (role_id,))
+            row = cur.fetchone()
+            if not row:
+                notice = urllib.parse.quote('???? ?? ???????')
+                return RedirectResponse(url=f'/?tab=topics&msg={notice}', status_code=303)
+            topic_id_value = row[0]
+        sync_roles_sheet(ctx.get_conn)
+        notice = urllib.parse.quote('???? ???????')
+        return RedirectResponse(url=f'/topic/{topic_id_value}?msg={notice}', status_code=303)
 
     @router.get('/role/{role_id}', response_class=HTMLResponse)
     def view_role(request: Request, role_id: int, msg: Optional[str] = None):

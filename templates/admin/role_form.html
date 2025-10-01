@@ -1,33 +1,52 @@
-{% extends 'admin/base.html' %}
-{% block title %}Новая роль для темы {{ topic.title }}{% endblock %}
+﻿{% extends 'admin/base.html' %}
+{% set current_role = role or {} %}
+{% set form_action = form_action or '/add-role' %}
+{% set submit_label = submit_label or 'Сохранить роль' %}
+{% set page_title = page_title or 'Настройка роли' %}
+{% block title %}{{ page_title }}{% endblock %}
 {% block header_meta %}
-<p class="muted">Добавить роль к теме «{{ topic.title }}»</p>
+<p class="muted">{{ page_title }} — {{ topic.title }}</p>
+{% endblock %}
+{% block header_actions %}
+  <a class="btn-secondary" href="/topic/{{ topic.id }}">Назад к теме</a>
+  <a class="btn-secondary" href="/?tab=topics">К списку тем</a>
 {% endblock %}
 {% block content %}
   <section class="surface stack">
-    <form method="post" action="/add-role" class="stack" style="gap:24px;">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <form method="post" action="{{ form_action }}" class="stack" style="gap:24px;">
       <input type="hidden" name="topic_id" value="{{ topic.id }}">
+      {% if current_role.id %}
+        <input type="hidden" name="role_id" value="{{ current_role.id }}">
+      {% endif %}
       <div class="muted">Тема #{{ topic.id }}</div>
       <label>
         <span class="title">Название роли *</span>
-        <input type="text" name="name" required>
+        <input type="text" name="name" value="{{ current_role.name or '' }}" required>
       </label>
       <label>
         <span class="title">Описание</span>
-        <textarea name="description" rows="5"></textarea>
+        <textarea name="description" rows="5">{{ current_role.description or '' }}</textarea>
       </label>
       <label>
-        <span class="title">Требуемые навыки</span>
-        <input type="text" name="required_skills" placeholder="Через запятую">
+        <span class="title">Ключевые навыки</span>
+        <input type="text" name="required_skills" value="{{ current_role.required_skills or '' }}" placeholder="Введите навыки через запятую">
       </label>
       <label>
-        <span class="title">Количество мест</span>
-        <input type="number" name="capacity" min="1" placeholder="Опционально">
+        <span class="title">Количество позиций</span>
+        <input type="number" name="capacity" min="1" value="{{ current_role.capacity or '' }}" placeholder="Например 3">
       </label>
       <div class="topic-actions">
-        <button class="btn" type="submit">Создать роль</button>
+        <button class="btn" type="submit">{{ submit_label }}</button>
         <a class="btn-secondary" href="/topic/{{ topic.id }}">Отмена</a>
       </div>
     </form>
+    {% if current_role.id %}
+      <form method="post" action="/role/{{ current_role.id }}/delete" style="margin:0;" onsubmit="return confirm('Удалить эту роль?');">
+        <button class="btn-danger" type="submit">Удалить роль</button>
+      </form>
+    {% endif %}
   </section>
 {% endblock %}

@@ -3,6 +3,10 @@
 {% block header_meta %}
 <p class="muted">Роль по теме «{{ role.topic_title }}»</p>
 {% endblock %}
+{% block header_actions %}
+  <a class="btn-secondary" href="/topic/{{ role.topic_id }}">К теме</a>
+  <a class="btn-secondary" href="/?tab=topics">К списку тем</a>
+{% endblock %}
 {% block content %}
   <section class="surface stack">
     {% if msg %}
@@ -12,6 +16,13 @@
       <div>
         <div class="badge">Роль #{{ role.id }}</div>
         <h2 style="margin:8px 0 0; font-size:1.4rem;">{{ role.name or 'Без названия' }}</h2>
+      </div>
+      <div class="role-actions">
+        <a class="btn-secondary" href="/role/{{ role.id }}/edit">Редактировать</a>
+        <form method="post" action="/role/{{ role.id }}/delete" style="margin:0;" onsubmit="return confirm('Удалить роль?');">
+          <button class="btn-danger" type="submit">Удалить</button>
+        </form>
+      </div>
       </div>
       <div class="muted">Тема: <a href="/topic/{{ role.topic_id }}">{{ role.topic_title }}</a></div>
       <div class="muted">Автор темы: {{ role.author }}</div>
