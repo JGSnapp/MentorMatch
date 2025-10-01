@@ -1,0 +1,90 @@
+{% extends 'admin/base.html' %}
+{% block title %}Пользователь #{{ user.id }} · {{ user.full_name }}{% endblock %}
+{% block header_meta %}
+<p class="muted">{{ user.role | capitalize }} • {{ user.email or 'email не указан' }}</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <div class="stack" style="gap:16px;">
+      <div>
+        <div class="badge">#{{ user.id }}</div>
+        <h2 style="margin:8px 0 0; font-size:1.5rem;">{{ user.full_name }}</h2>
+      </div>
+      <div class="muted">Telegram: {{ user.username or '—' }}</div>
+      <div class="muted">Создан: {{ user.created_at }}</div>
+      <div class="topic-actions">
+        <a class="btn-secondary" href="/edit-user/{{ user.id }}">Редактировать профиль</a>
+      </div>
+    </div>
+  </section>
+
+  {% if student %}
+    <section class="surface stack">
+      <h3 class="section-title">Студент</h3>
+      <div class="muted">Программа: {{ student.program or '—' }}</div>
+      <div class="muted">Навыки: {{ student.skills or '—' }}</div>
+      <div class="muted">Интересы: {{ student.interests or '—' }}</div>
+      <div class="muted">CV: {% if student.cv %}<a href="{{ student.cv }}" target="_blank">Ссылка</a>{% else %}—{% endif %}</div>
+    </section>
+  {% endif %}
+
+  {% if supervisor %}
+    <section class="surface stack">
+      <h3 class="section-title">Руководитель</h3>
+      <div class="muted">Должность: {{ supervisor.position or '—' }}</div>
+      <div class="muted">Учёная степень: {{ supervisor.degree or '—' }}</div>
+      <div class="muted">Лимит: {{ supervisor.capacity or '—' }}</div>
+      <div class="muted">Требования: {{ supervisor.requirements or '—' }}</div>
+      <div class="muted">Интересы: {{ supervisor.interests or '—' }}</div>
+    </section>
+  {% endif %}
+
+  {% if recommended_roles %}
+    <section class="surface stack">
+      <h3 class="section-title">Рекомендованные роли</h3>
+      <div class="stack">
+        {% for item in recommended_roles %}
+          <div class="surface" style="padding:18px;">
+            <div class="stack" style="gap:10px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong>{{ item.role_name or ('Роль #' ~ item.role_id) }}</strong>
+                <span class="badge">Ранг {{ item.rank or '—' }}</span>
+              </div>
+              <div class="muted">Тема: {{ item.topic_title or ('#' ~ item.topic_id) }}</div>
+              <details>
+                <summary class="muted" style="cursor:pointer;">Шаблон сообщения</summary>
+                <p style="margin-top:8px;">{{ item.default_message }}</p>
+              </details>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if recommended_topics %}
+    <section class="surface stack">
+      <h3 class="section-title">Рекомендованные темы</h3>
+      <div class="stack">
+        {% for item in recommended_topics %}
+          <div class="surface" style="padding:18px;">
+            <div class="stack" style="gap:10px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong>{{ item.title or ('Тема #' ~ item.topic_id) }}</strong>
+                <span class="badge">Ранг {{ item.rank or '—' }}</span>
+              </div>
+              <div class="muted">Автор: {{ item.author_name or ('#' ~ item.author_user_id) }}</div>
+              <details>
+                <summary class="muted" style="cursor:pointer;">Шаблон сообщения</summary>
+                <p style="margin-top:8px;">{{ item.default_message }}</p>
+              </details>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

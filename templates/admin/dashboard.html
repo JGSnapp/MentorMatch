@@ -1,0 +1,289 @@
+{% extends 'admin/base.html' %}
+{% block title %}Админка · MentorMatch{% endblock %}
+{% block extra_head %}
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const flash = document.querySelector('[data-flash]');
+    function showMessage(text, isError = false) {
+      if (!flash) return;
+      flash.textContent = text;
+      flash.dataset.state = isError ? 'error' : 'ok';
+      flash.hidden = false;
+      clearTimeout(flash._timer);
+      flash._timer = setTimeout(() => {
+        flash.hidden = true;
+      }, 6000);
+    }
+
+    async function postAssignment(payload, select) {
+      if (!select) return;
+      select.disabled = true;
+      flash && (flash.hidden = true);
+      try {
+        const response = await fetch('/assignments', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        showMessage(data?.message || 'Обновлено', !response.ok);
+      } catch (err) {
+        showMessage('Не удалось сохранить изменения', true);
+        console.error(err);
+      } finally {
+        select.disabled = false;
+      }
+    }
+
+    document.body.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement)) return;
+      if (target.matches('[data-role-select]')) {
+        postAssignment({
+          role_id: target.dataset.roleId,
+          student_id: target.value || null,
+        }, target);
+      }
+      if (target.matches('[data-supervisor-select]')) {
+        postAssignment({
+          topic_id: target.dataset.topicId,
+          supervisor_id: target.value || null,
+        }, target);
+      }
+    });
+  });
+</script>
+<style>
+  [data-flash] {
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    background: rgba(56, 189, 248, 0.08);
+    color: #e0f2fe;
+  }
+  [data-flash][data-state="error"] {
+    border-color: rgba(248, 113, 113, 0.4);
+    background: rgba(248, 113, 113, 0.12);
+    color: #fecaca;
+  }
+  .table-wrapper {
+    overflow-x: auto;
+  }
+  .topic-card {
+    border: 1px solid rgba(148, 163, 184, 0.1);
+    border-radius: 16px;
+    padding: 48px 24px 24px;
+    background: rgba(15, 23, 42, 0.65);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .topic-card header {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-right: 160px;
+  }
+  .topic-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .role-grid {
+    display: grid;
+    gap: 12px;
+  }
+  @media (min-width: 720px) {
+    .role-grid {
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+  }
+</style>
+{% endblock %}
+{% block header_meta %}
+<p class="muted">Управление темами, студентами и руководителями</p>
+{% endblock %}
+{% block content %}
+  <nav class="tabs">
+    <a href="/?tab=topics" class="{{ 'active' if tab == 'topics' else '' }}">Темы</a>
+    <a href="/?tab=students" class="{{ 'active' if tab == 'students' else '' }}">Студенты</a>
+    <a href="/?tab=supervisors" class="{{ 'active' if tab == 'supervisors' else '' }}">Руководители</a>
+  </nav>
+
+  <div class="surface message" data-flash hidden></div>
+  {% if msg %}
+    <div class="surface message">{{ msg }}</div>
+  {% endif %}
+
+  {% if tab == 'students' %}
+    <section class="surface stack">
+      <div class="topic-actions">
+        <a class="btn" href="/import-sheet?target=students">Загрузить студентов из таблицы</a>
+        <a class="btn-secondary" href="/add-student">Добавить студента</a>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Имя</th>
+              <th>Email</th>
+              <th>Telegram</th>
+              <th>Программа</th>
+              <th>Навыки</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for student in items %}
+              <tr>
+                <td>#{{ student.id }}</td>
+                <td>{{ student.full_name }}</td>
+                <td>{{ student.email or '—' }}</td>
+                <td>{{ student.username or '—' }}</td>
+                <td>{{ student.program or '—' }}</td>
+                <td>{{ student.skills or '—' }}</td>
+                <td><a href="/edit-user/{{ student.id }}">✏️</a></td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="7" class="muted">Студентов пока нет.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="topic-actions">
+        <a class="btn-secondary" href="/?tab=students&page={{ page - 1 }}" {% if not has_prev %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
+        <a class="btn-secondary" href="/?tab=students&page={{ page + 1 }}" {% if not has_next %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Вперёд</a>
+      </div>
+    </section>
+  {% elif tab == 'supervisors' %}
+    <section class="surface stack">
+      <div class="topic-actions">
+        <a class="btn" href="/import-sheet?target=supervisors">Загрузить руководителей из таблицы</a>
+        <a class="btn-secondary" href="/add-supervisor">Добавить руководителя</a>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Имя</th>
+              <th>Email</th>
+              <th>Telegram</th>
+              <th>Должность</th>
+              <th>Степень</th>
+              <th>Лимит</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for sup in items %}
+              <tr>
+                <td>#{{ sup.id }}</td>
+                <td>{{ sup.full_name }}</td>
+                <td>{{ sup.email or '—' }}</td>
+                <td>{{ sup.username or '—' }}</td>
+                <td>{{ sup.position or '—' }}</td>
+                <td>{{ sup.degree or '—' }}</td>
+                <td>{{ sup.capacity or '—' }}</td>
+                <td><a href="/edit-supervisor/{{ sup.id }}">✏️</a></td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="8" class="muted">Руководителей пока нет.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="topic-actions">
+        <a class="btn-secondary" href="/?tab=supervisors&page={{ page - 1 }}" {% if not has_prev %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
+        <a class="btn-secondary" href="/?tab=supervisors&page={{ page + 1 }}" {% if not has_next %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Вперёд</a>
+      </div>
+    </section>
+  {% else %}
+    <section class="surface stack">
+      <div class="topic-actions">
+        <a class="btn" href="/add-topic">Добавить тему</a>
+      </div>
+      <div class="stack">
+        {% for topic in items %}
+          {% set topic_meta = role_topics_map.get(topic.id) %}
+          <div class="topic-card topic-block">
+            <header>
+              <div>
+                <div class="badge topic-id">Тема #{{ topic.id }}</div>
+                <h2 style="margin: 4px 0 0; font-size: 1.2rem;">{{ topic.title or 'Без названия' }}</h2>
+              </div>
+              <div class="muted">Автор: {{ topic_meta.author_name if topic_meta else topic.author }}</div>
+              {% if topic_meta %}
+                <label>
+                  <span class="muted">Руководитель</span>
+                  <select data-supervisor-select data-topic-id="{{ topic_meta.id }}" {% if topic_meta.supervisor_locked %}disabled{% endif %}>
+                    <option value="">— Не выбран —</option>
+                    {% for sup in all_supervisors %}
+                      <option value="{{ sup.id }}" {% if sup.id == topic_meta.approved_supervisor_user_id %}selected{% endif %}>{{ sup.full_name }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                {% if topic_meta.supervisor_locked %}
+                  <p class="muted">Руководитель совпадает с автором и не может быть изменён.</p>
+                {% endif %}
+              {% endif %}
+            </header>
+            <div class="muted">Кого ищем: {{ topic.seeking_role }}{% if topic.direction %}, направление {{ topic.direction }}{% endif %}</div>
+            {% if topic_meta and topic_meta.roles %}
+              <div class="role-grid">
+                {% for role in topic_meta.roles %}
+                  <div class="surface" style="padding:16px;">
+                    <div class="stack">
+                      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                        <strong>{{ role.name or ('Роль #' ~ role.id) }}</strong>
+                        <a href="/role/{{ role.id }}" class="muted">Подробнее →</a>
+                      </div>
+                      <div class="role-actions">
+                        <a class="btn-secondary" href="/role/{{ role.id }}/edit">Редактировать</a>
+                        <form method="post" action="/role/{{ role.id }}/delete" style="margin:0;" onsubmit="return confirm('Удалить роль?');">
+                          <button class="btn-danger" type="submit">Удалить</button>
+                        </form>
+                      </div>
+                      <label>
+                        <span class="muted">Студент</span>
+                        <select data-role-select data-role-id="{{ role.id }}">
+                          <option value="">— Не выбран —</option>
+                          {% for student in all_students %}
+                            <option value="{{ student.id }}" {% if student.id == role.approved_student_user_id %}selected{% endif %}>{{ student.full_name }}</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      {% if role.approved_student_name %}
+                        <div class="muted">Назначен: {{ role.approved_student_name }}</div>
+                      {% endif %}
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            {% else %}
+              <p class="muted">Для темы ещё не созданы роли.</p>
+            {% endif %}
+            <div class="topic-actions">
+              <a class="btn-secondary" href="/edit-topic/{{ topic.id }}">Редактировать</a>
+              <a class="btn-secondary" href="/add-role?topic_id={{ topic.id }}">Добавить роль</a>
+              <form method="post" action="/topics/{{ topic.id }}/delete" style="margin:0;" onsubmit="return confirm('Удалить тему?');">
+                <button class="btn-danger" type="submit">Удалить</button>
+              </form>
+            </div>
+          </div>
+        {% else %}
+          <p class="muted">Тем пока нет.</p>
+        {% endfor %}
+      </div>
+      <div class="topic-actions">
+        <a class="btn-secondary" href="/?tab=topics&page={{ page - 1 }}" {% if not has_prev %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Назад</a>
+        <a class="btn-secondary" href="/?tab=topics&page={{ page + 1 }}" {% if not has_next %}aria-disabled="true" style="pointer-events:none;opacity:0.35"{% endif %}>Вперёд</a>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

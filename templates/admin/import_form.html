@@ -1,0 +1,26 @@
+{% extends 'admin/base.html' %}
+{% block title %}Импорт данных из Google Sheets{% endblock %}
+{% block header_meta %}
+<p class="muted">Импорт студентов и руководителей из таблицы</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <form method="post" action="/import-sheet" class="stack" style="gap:24px;">
+      <label>
+        <span class="title">Spreadsheet ID *</span>
+        <input type="text" name="spreadsheet_id" value="{{ spreadsheet_id }}" required>
+      </label>
+      <label>
+        <span class="title">Имя листа</span>
+        <input type="text" name="sheet_name" placeholder="Если пусто — берётся первый лист">
+      </label>
+      <div class="topic-actions">
+        <button class="btn" type="submit">Импортировать</button>
+        <a class="btn-secondary" href="/?tab={{ target }}">Отмена</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

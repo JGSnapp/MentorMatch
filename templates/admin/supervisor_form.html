@@ -1,0 +1,55 @@
+{% extends 'admin/base.html' %}
+{% block title %}{{ title }}{% endblock %}
+{% block header_meta %}
+<p class="muted">{{ title }}</p>
+{% endblock %}
+{% block header_actions %}
+  <a class="btn-secondary" href="/?tab=supervisors">Назад</a>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <form method="post" action="{{ action }}" class="stack" style="gap:24px;">
+      <label>
+        <span class="title">ФИО *</span>
+        <input type="text" name="full_name" value="{{ supervisor.full_name or '' }}" required>
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Email</span>
+          <input type="email" name="email" value="{{ supervisor.email or '' }}">
+        </label>
+        <label>
+          <span class="title">Telegram</span>
+          <input type="text" name="username" value="{{ supervisor.username or '' }}" placeholder="@username или ссылка">
+        </label>
+      </div>
+      <label>
+        <span class="title">Должность</span>
+        <input type="text" name="position" value="{{ supervisor.position or '' }}">
+      </label>
+      <label>
+        <span class="title">Учёная степень</span>
+        <input type="text" name="degree" value="{{ supervisor.degree or '' }}">
+      </label>
+      <label>
+        <span class="title">Лимит студентов</span>
+        <input type="number" name="capacity" min="1" value="{{ supervisor.capacity or '' }}">
+      </label>
+      <label>
+        <span class="title">Требования</span>
+        <textarea name="requirements" rows="4">{{ supervisor.requirements or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Интересы</span>
+        <textarea name="interests" rows="4">{{ supervisor.interests or '' }}</textarea>
+      </label>
+      <div class="topic-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn-secondary" href="/?tab=supervisors">Отмена</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

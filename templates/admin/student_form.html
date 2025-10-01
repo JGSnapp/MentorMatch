@@ -1,0 +1,51 @@
+{% extends 'admin/base.html' %}
+{% block title %}{{ title }}{% endblock %}
+{% block header_meta %}
+<p class="muted">{{ title }}</p>
+{% endblock %}
+{% block header_actions %}
+  <a class="btn-secondary" href="/?tab=students">Назад</a>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <form method="post" action="{{ action }}" class="stack" style="gap:24px;">
+      <label>
+        <span class="title">ФИО *</span>
+        <input type="text" name="full_name" value="{{ student.full_name or '' }}" required>
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Email</span>
+          <input type="email" name="email" value="{{ student.email or '' }}">
+        </label>
+        <label>
+          <span class="title">Telegram</span>
+          <input type="text" name="username" value="{{ student.username or '' }}" placeholder="@username или ссылка">
+        </label>
+      </div>
+      <label>
+        <span class="title">Образовательная программа</span>
+        <input type="text" name="program" value="{{ student.program or '' }}">
+      </label>
+      <label>
+        <span class="title">Навыки</span>
+        <input type="text" name="skills" value="{{ student.skills or '' }}" placeholder="через запятую">
+      </label>
+      <label>
+        <span class="title">Интересы</span>
+        <input type="text" name="interests" value="{{ student.interests or '' }}" placeholder="через запятую">
+      </label>
+      <label>
+        <span class="title">Ссылка на резюме</span>
+        <input type="text" name="cv" value="{{ student.cv or '' }}">
+      </label>
+      <div class="topic-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn-secondary" href="/?tab=students">Отмена</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

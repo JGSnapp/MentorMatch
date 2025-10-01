@@ -1,0 +1,49 @@
+{% extends 'admin/base.html' %}
+{% block title %}Руководитель #{{ sup.id }} · {{ sup.full_name }}{% endblock %}
+{% block header_meta %}
+<p class="muted">{{ sup.email or 'email не указан' }} • Telegram: {{ sup.username or '—' }}</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <div class="stack" style="gap:16px;">
+      <div>
+        <div class="badge">#{{ sup.id }}</div>
+        <h2 style="margin:8px 0 0; font-size:1.5rem;">{{ sup.full_name }}</h2>
+      </div>
+      <div class="muted">Должность: {{ sup.position or '—' }}</div>
+      <div class="muted">Учёная степень: {{ sup.degree or '—' }}</div>
+      <div class="muted">Лимит студентов: {{ sup.capacity or '—' }}</div>
+      <div class="muted">Требования: {{ sup.requirements or '—' }}</div>
+      <div class="muted">Интересы: {{ sup.interests or '—' }}</div>
+      <div class="topic-actions">
+        <a class="btn-secondary" href="/edit-supervisor/{{ sup.id }}">Редактировать</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="surface stack">
+    <h3 class="section-title">Рекомендованные темы</h3>
+    <div class="stack">
+      {% for item in recommended_topics %}
+        <div class="surface" style="padding:18px;">
+          <div class="stack" style="gap:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong>{{ item.title or ('Тема #' ~ item.topic_id) }}</strong>
+              <span class="badge">Ранг {{ item.rank or '—' }}</span>
+            </div>
+            <div class="muted">Автор: {{ item.author_name or ('#' ~ item.author_user_id) }}</div>
+            <details>
+              <summary class="muted" style="cursor:pointer;">Шаблон сообщения</summary>
+              <p style="margin-top:8px;">{{ item.default_message }}</p>
+            </details>
+          </div>
+        </div>
+      {% else %}
+        <p class="muted">Пока нет рекомендаций.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}
