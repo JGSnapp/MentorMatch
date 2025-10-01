@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from parse_gform import fetch_normalized_rows
 from media_store import persist_media_from_url
 from utils import parse_optional_int
+from embedding_utils import refresh_role_embedding, refresh_topic_embedding, refresh_user_embedding
 from sheet_pairs import sync_roles_sheet
 
 def _normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
@@ -748,6 +749,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                         ),
                     )
                 upserted_profiles += 1
+                refresh_user_embedding(conn, user_id)
 
                 # Create student's own topic if provided
                 topic = r.get('topic')
@@ -771,6 +773,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                             INSERT INTO topics(author_user_id, title, description, expected_outcomes,
                                                required_skills, seeking_role, is_active, created_at, updated_at)
                             VALUES (%s, %s, %s, %s, %s, 'supervisor', TRUE, now(), now())
+                            RETURNING id
                             ''', (
                                 user_id,
                                 title,
@@ -779,6 +782,8 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                                 skills_have,
                             ),
                         )
+                        new_topic_id = cur.fetchone()[0]
+                        refresh_topic_embedding(conn, new_topic_id)
                         inserted_topics += 1
 
  
@@ -833,6 +838,8 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     ''', (user_id, position, degree, capacity_val, requirements, interests),
                 )
 
+            refresh_user_embedding(conn, user_id)
+
         return RedirectResponse(url='/?msg=Руководитель добавлен&kind=supervisors', status_code=303)
 
     @router.post('/add-topic')
@@ -875,6 +882,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills, direction,
                                        seeking_role, is_active, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, now(), now())
+                    RETURNING id
                     ''', (
                         uid,
                         title.strip(),
@@ -885,6 +893,8 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                         seeking_role,
                     ),
                 )
+                new_topic_id = cur.fetchone()[0]
+                refresh_topic_embedding(conn, new_topic_id)
 
         return RedirectResponse(url='/?msg=Тема добавлена&kind=topics', status_code=303)
 
@@ -924,6 +934,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 """,
                 (full_name.strip(), (email or None), (username or None), role, cp, cpr, user_id),
             )
+            refresh_user_embedding(conn, user_id)
         kind = 'supervisors' if role == 'supervisor' else ('students' if role == 'student' else 'topics')
         return RedirectResponse(url=f'/?msg=Пользователь обновлён&id={user_id}&kind={kind}', status_code=303)
 
@@ -981,6 +992,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     VALUES (%s, %s, %s, %s, %s, %s)
                     ''', (user_id, position, degree, capacity_val, interests, requirements),
                 )
+            refresh_user_embedding(conn, user_id)
         return RedirectResponse(url='/?msg=Руководитель обновлён&kind=supervisors', status_code=303)
 
     @router.get('/edit-topic/{topic_id}', response_class=HTMLResponse)
@@ -1031,6 +1043,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     topic_id,
                 ),
             )
+            refresh_topic_embedding(conn, topic_id, cascade_roles=True)
         return RedirectResponse(url='/?msg=Тема обновлена&kind=topics', status_code=303)
 
     # =============================
@@ -1105,8 +1118,11 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 '''
                 INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, now(), now())
+                RETURNING id
                 ''', (topic_id, name.strip(), (description or None), (required_skills or None), capacity_val),
             )
+            new_role_id = cur.fetchone()[0]
+            refresh_role_embedding(conn, new_role_id)
         sync_roles_sheet(get_conn)
         return RedirectResponse(url=f'/topic/{topic_id}', status_code=303)
 

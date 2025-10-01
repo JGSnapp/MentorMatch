@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 import psycopg2
 import psycopg2.extras
@@ -22,6 +22,122 @@ client: Optional[OpenAI] = None
 if PROXY_API_KEY and PROXY_BASE_URL:
     client = OpenAI(api_key=PROXY_API_KEY, base_url=PROXY_BASE_URL)
 
+
+_VECTOR_WARNINGS: Set[str] = set()
+
+
+def _run_vector_query(conn, sql: str, params: tuple, warn_key: str) -> List[Dict[str, Any]]:
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        if warn_key not in _VECTOR_WARNINGS:
+            try:
+                print(f"WARN: vector search {warn_key} unavailable: {exc}")
+            except Exception:
+                pass
+            _VECTOR_WARNINGS.add(warn_key)
+        return []
+
+
+def _vector_students_for_topic(conn, topic_id: int, limit: int) -> List[Dict[str, Any]]:
+    sql = '''
+        WITH topic_vec AS (
+            SELECT embeddings FROM topics WHERE id = %s AND embeddings IS NOT NULL
+        )
+        SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
+               (1 - (u.embeddings <-> topic_vec.embeddings)) AS score,
+               sp.program, sp.skills, sp.interests, sp.cv,
+               sp.skills_to_learn, sp.preferred_team_track,
+               sp.team_has AS team_role, sp.team_needs,
+               sp.dev_track, sp.science_track, sp.startup_track
+        FROM topic_vec, users u
+        LEFT JOIN student_profiles sp ON sp.user_id = u.id
+        WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
+          AND u.embeddings IS NOT NULL
+        ORDER BY u.embeddings <-> topic_vec.embeddings
+        LIMIT %s
+    '''
+    return _run_vector_query(conn, sql, (topic_id, limit), 'topic_students')
+
+
+def _vector_supervisors_for_topic(conn, topic_id: int, limit: int) -> List[Dict[str, Any]]:
+    sql = '''
+        WITH topic_vec AS (
+            SELECT embeddings FROM topics WHERE id = %s AND embeddings IS NOT NULL
+        )
+        SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
+               (1 - (u.embeddings <-> topic_vec.embeddings)) AS score,
+               sp.position, sp.degree, sp.capacity, sp.interests
+        FROM topic_vec, users u
+        LEFT JOIN supervisor_profiles sp ON sp.user_id = u.id
+        WHERE LOWER(u.role) = 'supervisor'
+          AND u.embeddings IS NOT NULL
+        ORDER BY u.embeddings <-> topic_vec.embeddings
+        LIMIT %s
+    '''
+    return _run_vector_query(conn, sql, (topic_id, limit), 'topic_supervisors')
+
+
+def _vector_students_for_role(conn, role_id: int, limit: int) -> List[Dict[str, Any]]:
+    sql = '''
+        WITH role_vec AS (
+            SELECT embeddings FROM roles WHERE id = %s AND embeddings IS NOT NULL
+        )
+        SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
+               (1 - (u.embeddings <-> role_vec.embeddings)) AS score,
+               sp.program, sp.skills, sp.interests, sp.cv,
+               sp.skills_to_learn, sp.preferred_team_track,
+               sp.team_has AS team_role, sp.team_needs,
+               sp.dev_track, sp.science_track, sp.startup_track
+        FROM role_vec, users u
+        LEFT JOIN student_profiles sp ON sp.user_id = u.id
+        WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
+          AND u.embeddings IS NOT NULL
+        ORDER BY u.embeddings <-> role_vec.embeddings
+        LIMIT %s
+    '''
+    return _run_vector_query(conn, sql, (role_id, limit), 'role_students')
+
+
+def _vector_roles_for_student(conn, student_user_id: int, limit: int) -> List[Dict[str, Any]]:
+    sql = '''
+        WITH student_vec AS (
+            SELECT embeddings FROM users WHERE id = %s AND embeddings IS NOT NULL
+        )
+        SELECT r.id, r.name, r.description, r.required_skills, r.capacity,
+               t.id AS topic_id, t.title AS topic_title, t.direction,
+               t.author_user_id, u.full_name AS author_name,
+               (1 - (r.embeddings <-> student_vec.embeddings)) AS score
+        FROM student_vec, roles r
+        JOIN topics t ON t.id = r.topic_id AND t.is_active = TRUE AND t.seeking_role = 'student'
+        JOIN users u ON u.id = t.author_user_id
+        WHERE r.embeddings IS NOT NULL
+        ORDER BY r.embeddings <-> student_vec.embeddings
+        LIMIT %s
+    '''
+    return _run_vector_query(conn, sql, (student_user_id, limit), 'student_roles')
+
+
+def _vector_topics_for_supervisor(conn, supervisor_user_id: int, limit: int) -> List[Dict[str, Any]]:
+    sql = '''
+        WITH supervisor_vec AS (
+            SELECT embeddings FROM users WHERE id = %s AND embeddings IS NOT NULL
+        )
+        SELECT t.id, t.title, t.description, t.required_skills, t.expected_outcomes,
+               t.author_user_id, u.full_name AS author_name, t.created_at,
+               (1 - (t.embeddings <-> supervisor_vec.embeddings)) AS score
+        FROM supervisor_vec, topics t
+        JOIN users u ON u.id = t.author_user_id
+        WHERE t.is_active = TRUE
+          AND t.seeking_role = 'supervisor'
+          AND t.embeddings IS NOT NULL
+        ORDER BY t.embeddings <-> supervisor_vec.embeddings
+        LIMIT %s
+    '''
+    return _run_vector_query(conn, sql, (supervisor_user_id, limit), 'supervisor_topics')
 
 def get_topic(conn, topic_id: int) -> Optional[Dict[str, Any]]:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -84,6 +200,10 @@ def get_candidates(conn, topic_id: int, target_role: str, limit: int = 20) -> Li
             except Exception as e:
                 print(f"WARN: topic_candidates unavailable for students: {e}")
 
+            vector_rows = _vector_students_for_topic(conn, topic_id, limit)
+            if vector_rows:
+                return vector_rows
+
             # Fallback: latest students
             cur.execute(
                 '''
@@ -122,6 +242,10 @@ def get_candidates(conn, topic_id: int, target_role: str, limit: int = 20) -> Li
                     return [dict(r) for r in rows]
             except Exception as e:
                 print(f"WARN: topic_candidates unavailable for supervisors: {e}")
+
+            vector_rows = _vector_supervisors_for_topic(conn, topic_id, limit)
+            if vector_rows:
+                return vector_rows
 
             cur.execute(
                 '''
@@ -288,23 +412,24 @@ def handle_match_role(conn, role_id: int) -> Dict[str, Any]:
     if not topic:
         return {'status': 'error', 'message': f'Topic #{role_row["topic_id"]} not found'}
 
-    # Baseline candidates: latest students
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            '''
-            SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
-                   NULL::double precision AS score,
-                   sp.program, sp.skills, sp.interests, sp.cv,
-                   sp.skills_to_learn, sp.preferred_team_track, sp.team_has AS team_role, sp.team_needs,
-                   sp.dev_track, sp.science_track, sp.startup_track
-            FROM users u
-            LEFT JOIN student_profiles sp ON sp.user_id = u.id
-            WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
-            ORDER BY u.created_at DESC
-            LIMIT %s
-            ''', (20,),
-        )
-        candidates = [dict(r) for r in cur.fetchall()]
+    candidates = _vector_students_for_role(conn, role_id, 20)
+    if not candidates:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                '''
+                SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
+                       NULL::double precision AS score,
+                       sp.program, sp.skills, sp.interests, sp.cv,
+                       sp.skills_to_learn, sp.preferred_team_track, sp.team_has AS team_role, sp.team_needs,
+                       sp.dev_track, sp.science_track, sp.startup_track
+                FROM users u
+                LEFT JOIN student_profiles sp ON sp.user_id = u.id
+                WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
+                ORDER BY u.created_at DESC
+                LIMIT %s
+                ''', (20,),
+            )
+            candidates = [dict(r) for r in cur.fetchall()]
 
     # Enrich CV text
     for c in candidates:
@@ -533,7 +658,14 @@ def get_topics_needing_students(conn, limit: int = 20) -> List[Dict[str, Any]]:
     return [dict(r) for r in cur.fetchall()]
 
 
-def get_roles_needing_students(conn, limit: int = 40) -> List[Dict[str, Any]]:
+def get_roles_needing_students(
+    conn, limit: int = 40, student_user_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    if student_user_id is not None:
+        vector_roles = _vector_roles_for_student(conn, student_user_id, limit)
+        if vector_roles:
+            return vector_roles
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
@@ -802,7 +934,7 @@ def handle_match_student(conn, student_user_id: int) -> Dict[str, Any]:
     # Enrich student with CV text
     student['cv'] = _cv_text_from_value(conn, student.get('cv'))
 
-    roles = get_roles_needing_students(conn, limit=40)
+    roles = get_roles_needing_students(conn, limit=40, student_user_id=student_user_id)
     if not roles:
         return {'status': 'ok', 'student_user_id': student_user_id, 'items': []}
 
@@ -869,7 +1001,14 @@ def get_supervisor(conn, supervisor_user_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-def get_topics_needing_supervisors(conn, limit: int = 20) -> List[Dict[str, Any]]:
+def get_topics_needing_supervisors(
+    conn, limit: int = 20, supervisor_user_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    if supervisor_user_id is not None:
+        vector_topics = _vector_topics_for_supervisor(conn, supervisor_user_id, limit)
+        if vector_topics:
+            return vector_topics
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
@@ -924,7 +1063,7 @@ def handle_match_supervisor_user(conn, supervisor_user_id: int) -> Dict[str, Any
     if not supervisor:
         return {"status": "error", "message": f"Supervisor #{supervisor_user_id} not found"}
 
-    topics = get_topics_needing_supervisors(conn, limit=20)
+    topics = get_topics_needing_supervisors(conn, limit=20, supervisor_user_id=supervisor_user_id)
     if not topics:
         return {"status": "ok", "supervisor_user_id": supervisor_user_id, "items": []}
 
