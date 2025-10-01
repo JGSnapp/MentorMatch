@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 import aiohttp
+import httpx
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from telegram.error import TelegramError, TimedOut
+from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
 
 
@@ -44,10 +46,60 @@ class MentorMatchBot:
         )
         self._http_runner: Optional[web.AppRunner] = None
         self._http_site: Optional[web.BaseSite] = None
-        self.app = Application.builder().token(token).build()
+        request = self._create_telegram_request()
+        self._telegram_request: HTTPXRequest = request
+        self.app = Application.builder().token(token).request(request).build()
         self.app.post_init = self._post_init
         self.app.post_shutdown = self._post_shutdown
         self._setup_handlers()
+
+    def _create_telegram_request(self) -> HTTPXRequest:
+        """Build HTTPXRequest with tuned timeouts/proxy for Telegram API calls."""
+        def _timeout(name: str, default: float) -> Optional[float]:
+            raw = os.getenv(name)
+            if raw is None:
+                return default
+            parsed = self._parse_positive_float(raw)
+            if parsed is None:
+                logger.warning('Ignoring invalid %s=%r (expected positive number)', name, raw)
+                return default
+            return parsed
+
+        connect_timeout = _timeout('TELEGRAM_CONNECT_TIMEOUT', 15.0)
+        read_timeout = _timeout('TELEGRAM_READ_TIMEOUT', 30.0)
+        write_timeout = _timeout('TELEGRAM_WRITE_TIMEOUT', 30.0)
+        pool_timeout = _timeout('TELEGRAM_POOL_TIMEOUT', 5.0)
+
+        pool_size = self._parse_positive_int(os.getenv('TELEGRAM_POOL_SIZE'))
+        if not pool_size:
+            pool_size = 4
+
+        request_kwargs: Dict[str, Any] = {
+            'connect_timeout': connect_timeout,
+            'read_timeout': read_timeout,
+            'write_timeout': write_timeout,
+            'pool_timeout': pool_timeout,
+            'connection_pool_size': pool_size,
+        }
+
+        proxy_url = os.getenv('TELEGRAM_PROXY_URL') or os.getenv('TELEGRAM_PROXY')
+        if proxy_url:
+            request_kwargs['proxy'] = proxy_url
+            proxy_user = os.getenv('TELEGRAM_PROXY_USER') or os.getenv('TELEGRAM_PROXY_USERNAME')
+            proxy_password = os.getenv('TELEGRAM_PROXY_PASSWORD')
+            if proxy_user or proxy_password:
+                request_kwargs['proxy_auth'] = httpx.BasicAuth(proxy_user or '', proxy_password or '')
+
+        logger.info(
+            'Telegram HTTP client configured (connect=%s read=%s write=%s pool=%s, pool_size=%s%s)',
+            connect_timeout,
+            read_timeout,
+            write_timeout,
+            pool_timeout,
+            pool_size,
+            ', proxy enabled' if proxy_url else '',
+        )
+        return HTTPXRequest(**request_kwargs)
 
     # --- Text/keyboard fixing helpers ---
     def _fix_text(self, s: Optional[str]) -> Optional[str]:
@@ -129,6 +181,29 @@ class MentorMatchBot:
         if keyboard:
             return self._mk(keyboard)
         return None
+
+    def _parse_positive_float(self, value: Any) -> Optional[float]:
+        """Normalize float-like configuration values into positive floats."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            try:
+                fvalue = float(value)
+            except Exception:
+                return None
+        elif isinstance(value, str):
+            stripped = value.strip()
+            if not stripped or stripped.lower() in {'none', 'null'}:
+                return None
+            try:
+                fvalue = float(stripped)
+            except Exception:
+                return None
+        else:
+            return None
+        return fvalue if fvalue > 0 else None
 
     def _parse_positive_int(self, value: Any) -> Optional[int]:
         """Normalize identifiers that may come as str/float/0 into positive ints."""
@@ -2788,5 +2863,3 @@ class MentorMatchBot:
 if __name__ == '__main__':
     bot = MentorMatchBot()
     bot.run()
-
-

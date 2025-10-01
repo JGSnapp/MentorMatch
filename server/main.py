@@ -24,9 +24,25 @@ from admin import create_admin_router
 from sheet_pairs import sync_roles_sheet
 
 
+
+
+def _configure_logging() -> int:
+    level_name = (os.getenv('LOG_LEVEL') or 'INFO').upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+        root_logger.addHandler(handler)
+    root_logger.setLevel(level)
+    return level
+
+
 load_dotenv()
+LOG_LEVEL = _configure_logging()
 
 logger = logging.getLogger(__name__)
+logger.setLevel(LOG_LEVEL)
 
 def build_db_dsn() -> str:
     dsn = os.getenv('DATABASE_URL')
@@ -972,6 +988,14 @@ def api_add_role(
     required_skills: Optional[str] = Form(None),
     capacity: Optional[str] = Form(None),
 ):
+    logger.info(
+        'api_add_role request: topic_id=%s, name=%s, description_len=%s, required_len=%s, capacity_raw=%s',
+        topic_id,
+        _shorten(name, 80),
+        len(description or ''),
+        len(required_skills or ''),
+        capacity,
+    )
     with get_conn() as conn, conn.cursor() as cur:
         capacity_val = parse_optional_int(capacity)
         name_clean = (name or '').strip()
@@ -979,6 +1003,13 @@ def api_add_role(
             raise HTTPException(status_code=400, detail='name is required')
         description_val = normalize_optional_str(description)
         required_val = normalize_optional_str(required_skills)
+        logger.debug(
+            'api_add_role normalized: name=%s, capacity=%s, description_len=%s, required_len=%s',
+            name_clean,
+            capacity_val,
+            len(description_val or ''),
+            len(required_val or ''),
+        )
         cur.execute(
             '''
             INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
@@ -988,7 +1019,14 @@ def api_add_role(
         )
         rid = cur.fetchone()[0]
         conn.commit()
-    sync_roles_sheet(get_conn)
+        logger.info(
+            'api_add_role inserted role_id=%s for topic=%s (capacity=%s)',
+            rid,
+            topic_id,
+            capacity_val,
+        )
+    sync_result = sync_roles_sheet(get_conn)
+    logger.info('api_add_role: roles sheet sync triggered=%s', sync_result)
     return {'status': 'ok', 'role_id': rid}
 
 

@@ -29,6 +29,7 @@ def export_pairs_from_db(conn, spreadsheet_id: str, service_account_file: str) -
     Returns number of data rows written (excluding header).
     """
     rows: List[List[str]] = [HEADERS_RU]
+    samples: List[List[str]] = []
     with conn.cursor() as cur:
         cur.execute(
             '''
@@ -44,18 +45,36 @@ def export_pairs_from_db(conn, spreadsheet_id: str, service_account_file: str) -
             '''
         )
         for topic_title, role_name, student_name, supervisor_name in cur.fetchall():
-            rows.append([
+            row = [
                 topic_title or '',
                 role_name or '',
-                (student_name or ''),
-                (supervisor_name or ''),
-            ])
+                student_name or '',
+                supervisor_name or '',
+            ]
+            rows.append(row)
+            if len(samples) < 5:
+                samples.append(row)
+
+    data_rows = max(0, len(rows) - 1)
+    logger.info('Preparing roles export: rows=%s', data_rows)
+    if samples:
+        for idx, sample_row in enumerate(samples, start=1):
+            logger.debug(
+                'Export sample %s: topic=%s | role=%s | student=%s | supervisor=%s',
+                idx,
+                sample_row[0],
+                sample_row[1],
+                sample_row[2],
+                sample_row[3],
+            )
 
     ws = _open_ws(spreadsheet_id, service_account_file)
     # Clear and write
     ws.clear()
     ws.update('A1', rows)
-    return max(0, len(rows) - 1)
+    logger.info('Roles exported to spreadsheet %s (rows=%s)', spreadsheet_id, data_rows)
+    return data_rows
+
 
 
 logger = logging.getLogger(__name__)
@@ -77,22 +96,33 @@ def sync_roles_sheet(
 
     sid = (spreadsheet_id or os.getenv('PAIRS_SPREADSHEET_ID') or '').strip()
     if not sid:
-        logger.debug('Skipping roles sheet sync: spreadsheet ID is not configured')
+        logger.warning('Roles sheet sync skipped: spreadsheet ID is not configured')
         return False
     service_account_path = resolve_service_account_path(
         service_account_file or os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json')
     )
     if not service_account_path:
-        logger.debug('Skipping roles sheet sync: service account file is not configured')
+        logger.warning('Roles sheet sync skipped: service account file is not configured')
         return False
+
+    reuse_conn = conn is not None
+    logger.info('Starting roles sheet sync (spreadsheet=%s, reuse_conn=%s)', sid, reuse_conn)
+    logger.debug('Using service account file: %s', service_account_path)
     try:
         if conn is not None:
-            export_pairs_from_db(conn, sid, service_account_path)
+            rows_written = export_pairs_from_db(conn, sid, service_account_path)
         else:
             with get_conn() as fresh_conn:
-                export_pairs_from_db(fresh_conn, sid, service_account_path)
+                rows_written = export_pairs_from_db(fresh_conn, sid, service_account_path)
+        logger.info('Roles sheet sync completed (spreadsheet=%s, rows=%s)', sid, rows_written)
         return True
     except Exception as exc:  # pragma: no cover - best effort logging
-        logger.warning('Не удалось обновить Google Sheet с ролями: %s', exc)
+        logger.warning(
+            'Failed to export roles to Google Sheet %s: %s',
+            sid,
+            exc,
+            exc_info=True,
+        )
         return False
+
 
