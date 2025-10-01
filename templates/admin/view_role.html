@@ -1,0 +1,49 @@
+{% extends 'admin/base.html' %}
+{% block title %}Роль #{{ role.id }} · {{ role.name or 'Без названия' }}{% endblock %}
+{% block header_meta %}
+<p class="muted">Роль по теме «{{ role.topic_title }}»</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <div class="stack" style="gap:18px;">
+      <div>
+        <div class="badge">Роль #{{ role.id }}</div>
+        <h2 style="margin:8px 0 0; font-size:1.4rem;">{{ role.name or 'Без названия' }}</h2>
+      </div>
+      <div class="muted">Тема: <a href="/topic/{{ role.topic_id }}">{{ role.topic_title }}</a></div>
+      <div class="muted">Автор темы: {{ role.author }}</div>
+      <div class="muted">Вместимость: {{ role.capacity or '—' }}</div>
+      <div class="stack">
+        <h3 class="section-title">Описание</h3>
+        <p>{{ role.description or '—' }}</p>
+      </div>
+      <div class="stack">
+        <h3 class="section-title">Требуемые навыки</h3>
+        <p>{{ role.required_skills or '—' }}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="surface stack">
+    <h3 class="section-title">Рекомендованные студенты</h3>
+    <div class="stack">
+      {% for candidate in candidates %}
+        <div class="surface" style="padding:18px;">
+          <div class="stack" style="gap:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong>{{ candidate.full_name }}</strong>
+              <span class="badge">Ранг {{ candidate.rank or '—' }}</span>
+            </div>
+            <div class="muted">Telegram: {{ candidate.username or '—' }}</div>
+            <div class="muted">Score: {{ candidate.score or '—' }}</div>
+          </div>
+        </div>
+      {% else %}
+        <p class="muted">Пока нет студентов в рекомендации.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

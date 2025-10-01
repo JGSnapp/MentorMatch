@@ -1,0 +1,72 @@
+{% extends 'admin/base.html' %}
+{% block title %}{{ title }}{% endblock %}
+{% block header_meta %}
+<p class="muted">{{ title }}</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <form method="post" action="{{ action }}" class="stack" style="gap:24px;">
+      {% if topic.id %}
+        <input type="hidden" name="topic_id" value="{{ topic.id }}">
+      {% endif %}
+      <label>
+        <span class="title">Название темы *</span>
+        <input type="text" name="title" value="{{ topic.title or '' }}" required>
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Выберите автора *</span>
+          <select name="author_user_id">
+            <option value="">— Выбрать из списка —</option>
+            {% for sup in supervisors %}
+              <option value="{{ sup.id }}" {% if topic.author_user_id == sup.id %}selected{% endif %}>{{ sup.full_name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span class="title">или введите ФИО автора *</span>
+          <input type="text" name="author_full_name" value="{{ topic.author or '' }}" placeholder="Полное имя">
+        </label>
+      </div>
+      <div class="muted">Имя автора обязательно, выберите из списка или впишите вручную.</div>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Кого ищем</span>
+          <select name="seeking_role">
+            <option value="student" {% if topic.seeking_role == 'student' or not topic.seeking_role %}selected{% endif %}>Студента</option>
+            <option value="supervisor" {% if topic.seeking_role == 'supervisor' %}selected{% endif %}>Руководителя</option>
+          </select>
+        </label>
+        <label>
+          <span class="title">Направление (9 / 11 / 45)</span>
+          <input type="number" name="direction" min="0" max="99" value="{{ topic.direction or '' }}" placeholder="Опционально">
+        </label>
+      </div>
+      {% if topic.id %}
+        <label style="display:flex;align-items:center;gap:10px;">
+          <input type="checkbox" name="is_active" value="1" {% if topic.is_active %}checked{% endif %}>
+          <span>Тема активна</span>
+        </label>
+      {% endif %}
+      <label>
+        <span class="title">Описание</span>
+        <textarea name="description" rows="6">{{ topic.description or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Ожидаемые результаты</span>
+        <textarea name="expected_outcomes" rows="4">{{ topic.expected_outcomes or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Требуемые навыки</span>
+        <input type="text" name="required_skills" value="{{ topic.required_skills or '' }}" placeholder="Через запятую">
+      </label>
+      <div class="topic-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn-secondary" href="/?tab=topics">Отмена</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

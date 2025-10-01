@@ -1,0 +1,53 @@
+{% extends 'admin/base.html' %}
+{% block title %}Редактировать руководителя #{{ sup.id }}{% endblock %}
+{% block header_meta %}
+<p class="muted">Обновление данных руководителя</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <form method="post" action="/update-supervisor" class="stack" style="gap:24px;">
+      <input type="hidden" name="user_id" value="{{ sup.id }}">
+      <label>
+        <span class="title">ФИО *</span>
+        <input type="text" name="full_name" value="{{ sup.full_name }}" required>
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Email</span>
+          <input type="email" name="email" value="{{ sup.email or '' }}">
+        </label>
+        <label>
+          <span class="title">Telegram</span>
+          <input type="text" name="username" value="{{ sup.username or '' }}">
+        </label>
+      </div>
+      <label>
+        <span class="title">Должность</span>
+        <input type="text" name="position" value="{{ sup.position or '' }}">
+      </label>
+      <label>
+        <span class="title">Учёная степень</span>
+        <input type="text" name="degree" value="{{ sup.degree or '' }}">
+      </label>
+      <label>
+        <span class="title">Лимит студентов</span>
+        <input type="number" name="capacity" value="{{ sup.capacity or '' }}" min="1">
+      </label>
+      <label>
+        <span class="title">Интересы</span>
+        <textarea name="interests" rows="4">{{ sup.interests or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Требования</span>
+        <textarea name="requirements" rows="4">{{ sup.requirements or '' }}</textarea>
+      </label>
+      <div class="topic-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn-secondary" href="/supervisor/{{ sup.id }}">Отмена</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

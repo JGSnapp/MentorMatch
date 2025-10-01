@@ -1,0 +1,33 @@
+{% extends 'admin/base.html' %}
+{% block title %}Новая роль для темы {{ topic.title }}{% endblock %}
+{% block header_meta %}
+<p class="muted">Добавить роль к теме «{{ topic.title }}»</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    <form method="post" action="/add-role" class="stack" style="gap:24px;">
+      <input type="hidden" name="topic_id" value="{{ topic.id }}">
+      <div class="muted">Тема #{{ topic.id }}</div>
+      <label>
+        <span class="title">Название роли *</span>
+        <input type="text" name="name" required>
+      </label>
+      <label>
+        <span class="title">Описание</span>
+        <textarea name="description" rows="5"></textarea>
+      </label>
+      <label>
+        <span class="title">Требуемые навыки</span>
+        <input type="text" name="required_skills" placeholder="Через запятую">
+      </label>
+      <label>
+        <span class="title">Количество мест</span>
+        <input type="number" name="capacity" min="1" placeholder="Опционально">
+      </label>
+      <div class="topic-actions">
+        <button class="btn" type="submit">Создать роль</button>
+        <a class="btn-secondary" href="/topic/{{ topic.id }}">Отмена</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends 'admin/base.html' %}
+{% block title %}Редактировать пользователя #{{ user.id }}{% endblock %}
+{% block header_meta %}
+<p class="muted">Обновление данных пользователя</p>
+{% endblock %}
+{% block content %}
+  <section class="surface stack">
+    {% if msg %}
+      <div class="message">{{ msg }}</div>
+    {% endif %}
+    <form method="post" action="/update-user" class="stack" style="gap:24px;">
+      <input type="hidden" name="user_id" value="{{ user.id }}">
+      <label>
+        <span class="title">ФИО *</span>
+        <input type="text" name="full_name" value="{{ user.full_name }}" required>
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Email</span>
+          <input type="email" name="email" value="{{ user.email or '' }}">
+        </label>
+        <label>
+          <span class="title">Telegram</span>
+          <input type="text" name="username" value="{{ user.username or '' }}">
+        </label>
+      </div>
+      <label>
+        <span class="title">Роль</span>
+        <select name="role">
+          <option value="student" {% if user.role == 'student' %}selected{% endif %}>Студент</option>
+          <option value="supervisor" {% if user.role == 'supervisor' %}selected{% endif %}>Руководитель</option>
+          <option value="admin" {% if user.role == 'admin' %}selected{% endif %}>Администратор</option>
+        </select>
+      </label>
+      <div class="form-grid two">
+        <label style="display:flex;align-items:center;gap:10px;">
+          <input type="checkbox" name="consent_personal" value="1" {% if user.consent_personal %}checked{% endif %}>
+          <span>Согласие на обработку персональных данных</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:10px;">
+          <input type="checkbox" name="consent_private" value="1" {% if user.consent_private %}checked{% endif %}>
+          <span>Согласие на передачу третьим лицам</span>
+        </label>
+      </div>
+      <div class="topic-actions">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn-secondary" href="/user/{{ user.id }}">Отмена</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
