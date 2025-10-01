@@ -170,7 +170,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 all_supervisors = [dict(r) for r in cur_supervisors.fetchall()]
 
         return templates.TemplateResponse(
-            'index.html',
+            'admin/dashboard.html',
             {
                 'request': request,
                 'msg': msg,
@@ -324,7 +324,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                     t['default_message'] = (
                         f"Здравствуйте! Готов(а) обсудить тему «{topic_label}» в качестве научного руководителя."
                     )
-        return templates.TemplateResponse('view_user.html', {
+        return templates.TemplateResponse('admin/users/detail.html', {
             'request': request,
             'user': user,
             'student': student,
@@ -371,7 +371,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 t['default_message'] = (
                     f"Здравствуйте! Готов(а) обсудить тему «{topic_label}» в качестве научного руководителя."
                 )
-        return templates.TemplateResponse('view_supervisor.html', {
+        return templates.TemplateResponse('admin/supervisors/detail.html', {
             'request': request,
             'sup': sup,
             'recommended_topics': recommended_topics,
@@ -421,7 +421,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 cand['default_message'] = (
                     f"{greeting} Приглашаю вас рассмотреть тему «{topic_title}» в качестве научного руководителя."
                 )
-        return templates.TemplateResponse('view_topic.html', {
+        return templates.TemplateResponse('admin/topics/detail.html', {
             'request': request,
             'topic': topic,
             'roles': roles,
@@ -465,7 +465,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 cand['default_message'] = (
                     f"{greeting} Приглашаю присоединиться к роли «{role_title}» по теме «{topic_title}»."
                 )
-        return templates.TemplateResponse('view_role.html', {
+        return templates.TemplateResponse('admin/topics/role_detail.html', {
             'request': request,
             'role': role,
             'candidates': candidates,
@@ -899,7 +899,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             row = cur.fetchone()
             if not row:
                 return RedirectResponse(url='/?msg=Пользователь не найден', status_code=303)
-        return templates.TemplateResponse('edit_user.html', {'request': request, 'user': dict(row)})
+        return templates.TemplateResponse('admin/users/edit.html', {'request': request, 'user': dict(row)})
 
     @router.post('/update-user')
     def update_user(
@@ -942,7 +942,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             row = cur.fetchone()
             if not row:
                 return RedirectResponse(url='/?msg=Руководитель не найден&kind=supervisors', status_code=303)
-        return templates.TemplateResponse('edit_supervisor.html', {'request': request, 'sup': dict(row)})
+        return templates.TemplateResponse('admin/supervisors/edit.html', {'request': request, 'sup': dict(row)})
 
     @router.post('/update-supervisor')
     def update_supervisor(
@@ -997,7 +997,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             row = cur.fetchone()
             if not row:
                 return RedirectResponse(url='/?msg=Тема не найдена&kind=topics', status_code=303)
-        return templates.TemplateResponse('edit_topic.html', {'request': request, 'topic': dict(row)})
+        return templates.TemplateResponse('admin/topics/edit.html', {'request': request, 'topic': dict(row)})
 
     @router.post('/update-topic')
     def update_topic(
@@ -1048,7 +1048,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             student = cur.fetchone()
             cur.execute("SELECT * FROM supervisor_profiles WHERE user_id=%s", (user_id,))
             supervisor = cur.fetchone()
-        return templates.TemplateResponse('view_user.html', {
+        return templates.TemplateResponse('admin/users/detail.html', {
             'request': request,
             'user': dict(user),
             'student': dict(student) if student else None,
@@ -1070,7 +1070,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
             row = cur.fetchone()
             if not row:
                 return RedirectResponse(url='/?msg=Руководитель не найден&kind=supervisors', status_code=303)
-        return templates.TemplateResponse('view_supervisor.html', {'request': request, 'sup': dict(row)})
+        return templates.TemplateResponse('admin/supervisors/detail.html', {'request': request, 'sup': dict(row)})
 
     @router.get('/topic/{topic_id}', response_class=HTMLResponse)
     def view_topic(request: Request, topic_id: int):
@@ -1089,7 +1089,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
         with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur2:
             cur2.execute('SELECT * FROM roles WHERE topic_id=%s ORDER BY created_at DESC', (topic_id,))
             roles = cur2.fetchall()
-        return templates.TemplateResponse('view_topic.html', {'request': request, 'topic': dict(row), 'roles': [dict(r) for r in roles]})
+        return templates.TemplateResponse('admin/topics/detail.html', {'request': request, 'topic': dict(row), 'roles': [dict(r) for r in roles]})
 
     @router.post('/add-role')
     def add_role(request: Request,
@@ -1138,7 +1138,7 @@ def create_admin_router(get_conn: Callable, templates) -> APIRouter:
                 ''', (role_id,)
             )
             cands = cur.fetchall()
-        return templates.TemplateResponse('view_role.html', {
+        return templates.TemplateResponse('admin/topics/role_detail.html', {
             'request': request,
             'role': dict(role),
             'candidates': [dict(r) for r in cands],

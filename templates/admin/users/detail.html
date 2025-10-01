@@ -1,0 +1,192 @@
+{% extends 'admin/base.html' %}
+{% block title %}Пользователь #{{ user.id }} — MentorMatch{% endblock %}
+{% block page_title %}{{ user.full_name }}{% endblock %}
+{% block page_description %}Подробный профиль пользователя и связанные рекомендации{% endblock %}
+{% block header_actions %}
+  <a class="btn" href="/edit-user/{{ user.id }}">Редактировать</a>
+  <a class="btn btn--ghost" href="/?kind={{ 'supervisors' if user.role=='supervisor' else 'students' }}">К списку</a>
+  {% if user.role=='student' %}
+    <form class="form-inline" method="post" action="/do-match-student">
+      <input type="hidden" name="student_user_id" value="{{ user.id }}" />
+      <button class="btn btn--secondary" type="submit">Подобрать темы</button>
+    </form>
+  {% elif user.role=='supervisor' %}
+    <form class="form-inline" method="post" action="/do-match-supervisor">
+      <input type="hidden" name="supervisor_user_id" value="{{ user.id }}" />
+      <button class="btn btn--secondary" type="submit">Подобрать темы</button>
+    </form>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+<section class="section">
+  <article class="card">
+    <h2 class="card__title">Основная информация</h2>
+    <div class="properties">
+      <div class="properties__item">
+        <span class="properties__label">ID</span>
+        <div class="properties__value">#{{ user.id }}</div>
+      </div>
+      <div class="properties__item">
+        <span class="properties__label">Email</span>
+        <div class="properties__value">{{ user.email or '-' }}</div>
+      </div>
+      <div class="properties__item">
+        <span class="properties__label">Роль</span>
+        <div class="properties__value"><span class="pill">{{ user.role }}</span></div>
+      </div>
+      <div class="properties__item">
+        <span class="properties__label">Создан</span>
+        <div class="properties__value">{{ user.created_at }}</div>
+      </div>
+      <div class="properties__item">
+        <span class="properties__label">Telegram</span>
+        <div class="properties__value">
+          {% if user.username %}
+            {% set u = user.username %}
+            {% if 't.me' in u %}
+              <a href="{{ u }}" target="_blank" rel="noopener">{{ u }}</a>
+            {% else %}
+              {% set uname = u.lstrip('@') %}
+              <a href="https://t.me/{{ uname }}" target="_blank" rel="noopener">@{{ uname }}</a>
+            {% endif %}
+          {% else %}-{% endif %}
+        </div>
+      </div>
+      <div class="properties__item">
+        <span class="properties__label">Согласия</span>
+        <div class="properties__value">
+          {% if user.consent_personal %}<span class="badge badge--success">ПДн</span>{% endif %}
+          {% if user.consent_private %}<span class="badge badge--success">Приватные чаты</span>{% endif %}
+          {% if not (user.consent_personal or user.consent_private) %}<span class="muted">Нет данных</span>{% endif %}
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <article class="card">
+    {% if student %}
+      <h2 class="card__title">Профиль студента</h2>
+      <div class="properties">
+        <div class="properties__item"><span class="properties__label">Направление</span><div class="properties__value">{{ student.program or '-' }}</div></div>
+        <div class="properties__item"><span class="properties__label">Навыки</span><div class="properties__value">{{ student.skills or '-' }}</div></div>
+        <div class="properties__item"><span class="properties__label">Интересы</span><div class="properties__value">{{ student.interests or '-' }}</div></div>
+        <div class="properties__item"><span class="properties__label">Треки</span><div class="properties__value">dev: {{ student.dev_track }}, science: {{ student.science_track }}, startup: {{ student.startup_track }}</div></div>
+        <div class="properties__item">
+          <span class="properties__label">CV</span>
+          <div class="properties__value">
+            {% if student.cv %}
+              {% if student.cv.startswith('/media/') %}
+                <a href="{{ student.cv }}" target="_blank" rel="noopener">Скачать CV</a>
+              {% else %}
+                <a href="{{ student.cv }}" target="_blank" rel="noopener">{{ student.cv }}</a>
+              {% endif %}
+            {% else %}-{% endif %}
+          </div>
+        </div>
+      </div>
+    {% elif supervisor %}
+      <h2 class="card__title">Профиль руководителя</h2>
+      <div class="properties">
+        <div class="properties__item"><span class="properties__label">Должность</span><div class="properties__value">{{ supervisor.position or '-' }}</div></div>
+        <div class="properties__item"><span class="properties__label">Степень</span><div class="properties__value">{{ supervisor.degree or '-' }}</div></div>
+        <div class="properties__item"><span class="properties__label">Лимит студентов</span><div class="properties__value">{{ supervisor.capacity or '-' }}</div></div>
+        <div class="properties__item"><span class="properties__label">Интересы</span><div class="properties__value">{{ supervisor.interests or '-' }}</div></div>
+        <div class="properties__item"><span class="properties__label">Требования</span><div class="properties__value">{{ supervisor.requirements or '-' }}</div></div>
+      </div>
+    {% else %}
+      <h2 class="card__title">Профиль</h2>
+      <p class="muted">Дополнительная информация отсутствует.</p>
+    {% endif %}
+  </article>
+
+  {% if user.role == 'student' %}
+    <article class="card" id="recommended-roles">
+      <h2 class="card__title">Рекомендованные роли</h2>
+      <p class="card__subtitle">Топ-10 ролей, подходящих студенту по данным подбора.</p>
+      {% if recommended_roles %}
+        <table class="table">
+          <thead><tr><th>Место</th><th>Роль</th><th>Оценка</th><th>Действия</th></tr></thead>
+          <tbody>
+            {% for r in recommended_roles %}
+              <tr>
+                <td>{{ r.rank or '-' }}</td>
+                <td>
+                  <strong><a href="/role/{{ r.role_id }}">{{ r.role_name or ('Роль #' ~ r.role_id) }}</a></strong>
+                  <div class="muted">Тема: <a href="/topic/{{ r.topic_id }}">{{ r.topic_title or ('Тема #' ~ r.topic_id) }}</a></div>
+                  <div class="muted">Автор: {{ r.author_name or '-' }}</div>
+                </td>
+                <td>{{ '%.2f'|format(r.score) if r.score is not none else '-' }}</td>
+                <td>
+                  {% if r.author_user_id %}
+                    <details>
+                      <summary>Подать заявку</summary>
+                      <form class="stacked-form" method="post" action="/send-request">
+                        <input type="hidden" name="sender_user_id" value="{{ user.id }}" />
+                        <input type="hidden" name="receiver_user_id" value="{{ r.author_user_id }}" />
+                        <input type="hidden" name="topic_id" value="{{ r.topic_id }}" />
+                        <input type="hidden" name="role_id" value="{{ r.role_id }}" />
+                        <input type="hidden" name="return_url" value="{{ request.url.path }}#recommended-roles" />
+                        <label>Сообщение<textarea class="form-control" name="body" required>{{ r.default_message }}</textarea></label>
+                        <div class="form-actions"><button class="btn" type="submit">Отправить заявку</button></div>
+                      </form>
+                    </details>
+                  {% else %}
+                    <span class="muted">Нет автора для заявки</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">Нажмите «Подобрать темы», чтобы сформировать рекомендации.</p>
+      {% endif %}
+    </article>
+  {% endif %}
+
+  {% if user.role == 'supervisor' %}
+    <article class="card" id="recommended-topics">
+      <h2 class="card__title">Рекомендованные темы</h2>
+      <p class="card__subtitle">Топ-10 тем, для которых этот руководитель подходит лучше всего.</p>
+      {% if recommended_topics %}
+        <table class="table">
+          <thead><tr><th>Место</th><th>Тема</th><th>Оценка</th><th>Действия</th></tr></thead>
+          <tbody>
+            {% for t in recommended_topics %}
+              <tr>
+                <td>{{ t.rank or '-' }}</td>
+                <td>
+                  <strong><a href="/topic/{{ t.topic_id }}">{{ t.title or ('Тема #' ~ t.topic_id) }}</a></strong>
+                  <div class="muted">Автор: {{ t.author_name or '-' }}</div>
+                  {% if t.direction %}<div class="muted">Направление: {{ t.direction }}</div>{% endif %}
+                </td>
+                <td>{{ '%.2f'|format(t.score) if t.score is not none else '-' }}</td>
+                <td>
+                  {% if t.author_user_id %}
+                    <details>
+                      <summary>Предложить участие</summary>
+                      <form class="stacked-form" method="post" action="/send-request">
+                        <input type="hidden" name="sender_user_id" value="{{ user.id }}" />
+                        <input type="hidden" name="receiver_user_id" value="{{ t.author_user_id }}" />
+                        <input type="hidden" name="topic_id" value="{{ t.topic_id }}" />
+                        <input type="hidden" name="return_url" value="{{ request.url.path }}#recommended-topics" />
+                        <label>Сообщение<textarea class="form-control" name="body" required>{{ t.default_message }}</textarea></label>
+                        <div class="form-actions"><button class="btn" type="submit">Отправить заявку</button></div>
+                      </form>
+                    </details>
+                  {% else %}
+                    <span class="muted">Нет автора для заявки</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">Нажмите «Подобрать темы», чтобы сформировать рекомендации.</p>
+      {% endif %}
+    </article>
+  {% endif %}
+</section>
+{% endblock %}
