@@ -13,6 +13,7 @@ from bot import dispatcher
 from bot.config import (
     create_telegram_request,
     load_admins,
+    parse_positive_float,
     parse_positive_int,
     truthy_flag,
 )
@@ -173,7 +174,13 @@ class BotCore:
 
     # Placeholders for mixins -------------------------------------------
     def _build_reply_markup(self, payload: dict[str, Any]):  # pragma: no cover - overridden
-        raise NotImplementedError
+        handler = getattr(super(), "_build_reply_markup", None)
+        if handler is None:
+            return None
+        return handler(payload)
 
     def _fix_text(self, s: Any):  # pragma: no cover - overridden
-        raise NotImplementedError
+        handler = getattr(super(), "_fix_text", None)
+        if handler is None:
+            return s
+        return handler(s)

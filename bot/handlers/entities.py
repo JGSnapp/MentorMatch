@@ -383,6 +383,159 @@ class EntityHandlers(BaseHandlers):
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text('\n'.join(lines2)), reply_markup=self._mk(kb))
 
+    async def cb_view_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await self._answer_callback(q)
+        try:
+            rid = int(q.data.split('_')[1])
+        except Exception:
+            await q.edit_message_text(self._fix_text('Некорректный идентификатор роли.'))
+            return
+        role = await self._api_get(f'/api/roles/{rid}')
+        if not role:
+            await q.edit_message_text(self._fix_text('Роль не найдена.'))
+            return
+
+        topic_id = role.get('topic_id')
+        topic_title = role.get('topic_title') or (f'Тема #{topic_id}' if topic_id else '—')
+        role_name = (role.get('name') or '–').strip() or '–'
+        author_name = (role.get('author') or '–').strip() or '–'
+        description = (role.get('description') or '–').strip()
+        required_skills = (role.get('required_skills') or '–').strip() or '–'
+        capacity = role.get('capacity')
+        capacity_display = '–'
+        if capacity not in (None, ''):
+            try:
+                capacity_display = str(int(capacity))
+            except Exception:
+                capacity_display = str(capacity)
+
+        lines: List[str] = [
+            f'Роль: {role_name}',
+            f'Тема: {topic_title}',
+            f'Автор темы: {author_name}',
+            f'Описание: {(description or "–")[:500] or "–"}',
+            f'Навыки: {required_skills}',
+            f'Вместимость: {capacity_display}',
+            f'ID роли: {rid}',
+        ]
+
+        candidates_resp = await self._api_get(f'/api/role-candidates/{rid}?limit=5')
+        candidates: List[Dict[str, Any]] = []
+        if isinstance(candidates_resp, list):
+            candidates = [c for c in candidates_resp if isinstance(c, dict)]
+        if candidates:
+            lines.append('')
+            lines.append('Последние рекомендации:')
+
+        kb: List[List[InlineKeyboardButton]] = []
+        candidate_buttons: List[List[InlineKeyboardButton]] = []
+        for item in candidates:
+            rank = item.get('rank')
+            rank_label = f'#{rank}' if rank else '#?'
+            full_name = (item.get('full_name') or '–').strip() or '–'
+            score = item.get('score')
+            score_suffix = ''
+            if score not in (None, ''):
+                score_suffix = f' (балл={score})'
+            lines.append(f'{rank_label}. {full_name}{score_suffix}')
+            sid = self._parse_positive_int(item.get('user_id'))
+            if sid is not None:
+                candidate_buttons.append([
+                    InlineKeyboardButton(
+                        self._fix_text(f'👤 {full_name[:40]}'), callback_data=f'student_{sid}'
+                    )
+                ])
+
+        uid = context.user_data.get('uid')
+        author_id = role.get('author_user_id')
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        same_author = self._ids_equal(uid, author_id)
+        is_admin = self._is_admin(update)
+
+        if is_admin or same_author:
+            kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
+            kb.append([InlineKeyboardButton('👥 Подобрать студентов', callback_data=f'match_role_{rid}')])
+
+        can_apply = (
+            viewer_role == 'student'
+            and not same_author
+            and uid is not None
+            and author_id is not None
+        )
+        if can_apply:
+            kb.append([InlineKeyboardButton('📨 Подать заявку на роль', callback_data=f'apply_role_{rid}')])
+
+        kb.extend(candidate_buttons)
+
+        if topic_id:
+            kb.append([InlineKeyboardButton('📚 К теме', callback_data=f'topic_{topic_id}')])
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+
+        await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
+
+    async def cb_apply_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await self._answer_callback(q)
+        try:
+            rid = int(q.data.rsplit('_', 1)[1])
+        except Exception:
+            await q.edit_message_text(self._fix_text('Некорректный идентификатор роли.'))
+            return
+
+        role = await self._api_get(f'/api/roles/{rid}')
+        if not role:
+            await q.edit_message_text(self._fix_text('Роль не найдена.'))
+            return
+
+        uid = context.user_data.get('uid')
+        if uid is None:
+            await q.message.reply_text(self._fix_text('Сначала подтвердите профиль через /start.'))
+            return
+
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        if viewer_role != 'student':
+            await q.message.reply_text(self._fix_text('Заявку на роль может отправить только студент.'))
+            return
+
+        author_id = role.get('author_user_id')
+        if not author_id:
+            await q.message.reply_text(self._fix_text('Не удалось определить получателя заявки.'))
+            return
+
+        if self._ids_equal(uid, author_id):
+            await q.message.reply_text(self._fix_text('Нельзя откликаться на собственную роль.'))
+            return
+
+        topic_id = role.get('topic_id')
+        topic_title = role.get('topic_title') or (f'Тема #{topic_id}' if topic_id else 'тема')
+        role_name = (role.get('name') or '').strip() or f'Роль #{rid}'
+
+        default_body = (
+            f'Здравствуйте! Хотел(а) бы присоединиться к роли "{role_name}" '
+            f'по теме "{topic_title}".'
+        )
+        prompt = (
+            f'Напишите сообщение для автора темы «{topic_title}» по роли «{role_name}».\n'
+            'Расскажите о себе и мотивации. Для отмены — /start. Можно отправить «-», чтобы использовать шаблон.'
+        )
+
+        payload: Dict[str, Any] = {
+            'sender_user_id': str(uid),
+            'receiver_user_id': str(author_id),
+            'role_id': str(rid),
+            'topic_title': topic_title,
+            'role_name': role_name,
+            'receiver_name': role.get('author'),
+            'default_body': default_body,
+            'return_callback': f'role_{rid}',
+            'source': 'role',
+        }
+        if topic_id is not None:
+            payload['topic_id'] = str(topic_id)
+
+        context.user_data['application_payload'] = payload
+        context.user_data['awaiting'] = 'submit_application_body'
+        await q.message.reply_text(self._fix_text(prompt))
+
     async def cb_apply_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query; await self._answer_callback(q)
         try:
@@ -514,6 +667,37 @@ class EntityHandlers(BaseHandlers):
         prompt = (
             f"Редактирование темы.\n"
             f"Текущее название: {topic.get('title') or '–'}.\n"
+            "Введите новое название. Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
+        )
+        await q.message.reply_text(self._fix_text(prompt))
+
+    async def cb_edit_role_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query; await self._answer_callback(q)
+        try:
+            rid = int(q.data.split('_')[2])
+        except Exception:
+            await self._answer_callback(q, text=self._fix_text('Некорректный идентификатор роли.'), show_alert=True)
+            return
+        role = await self._api_get(f'/api/roles/{rid}')
+        if not role:
+            await q.edit_message_text(self._fix_text('Роль не найдена.'))
+            return
+        author_id = role.get('author_user_id')
+        viewer_id = context.user_data.get('uid')
+        is_admin = self._is_admin(update)
+        if not is_admin:
+            if viewer_id is None or author_id is None or not self._ids_equal(viewer_id, author_id):
+                await self._answer_callback(q, text=self._fix_text('У вас нет прав редактировать эту роль.'), show_alert=True)
+                return
+        context.user_data['awaiting'] = 'edit_role_name'
+        payload: Dict[str, Any] = {'role_id': rid}
+        if viewer_id is not None and not is_admin:
+            payload['editor_user_id'] = str(viewer_id)
+        context.user_data['edit_role_payload'] = payload
+        context.user_data['edit_role_original'] = role
+        prompt = (
+            f"Редактирование роли.\n"
+            f"Текущее название: {role.get('name') or '–'}.\n"
             "Введите новое название. Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
         )
         await q.message.reply_text(self._fix_text(prompt))

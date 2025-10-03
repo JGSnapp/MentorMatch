@@ -364,7 +364,7 @@ async def _startup_event():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_direction ON topics(direction)")
             except Exception:
                 pass
-            # student_profiles schema is defined in 01_schema.sql; no runtime migration for team_role
+            # student_profiles schema is defined in schema.sql; no runtime migration for team_role
             # Approved links
             try:
                 cur.execute("ALTER TABLE topics ADD COLUMN IF NOT EXISTS approved_supervisor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL")
