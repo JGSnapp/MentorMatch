@@ -12,19 +12,22 @@ from fastapi.templating import Jinja2Templates
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from media_store import persist_media_from_url, MEDIA_ROOT
+from media_store import MEDIA_ROOT
 from utils import parse_optional_int, normalize_optional_str, resolve_service_account_path
 
-from parse_gform import fetch_normalized_rows, fetch_supervisor_rows
-from matching import handle_match, handle_match_student, handle_match_supervisor_user
-from matching import handle_match_role
-from matching import client as LLM_CLIENT  # reuse configured OpenAI client
-from matching import PROXY_MODEL
 from admin import create_admin_router
 from sheet_pairs import sync_roles_sheet
 
-
-
+from api import (
+    create_matching_router,
+    create_students_import_router,
+    create_supervisors_import_router,
+)
+from services.topic_import import (
+    normalize_telegram_link,
+    extract_telegram_username,
+    process_cv,
+)
 
 def _configure_logging() -> int:
     level_name = (os.getenv('LOG_LEVEL') or 'INFO').upper()
@@ -142,40 +145,12 @@ def _send_telegram_notification(telegram_id: Optional[Any], text: str, *, button
 app = FastAPI(title='MentorMatch Admin MVP')
 templates = Jinja2Templates(directory=str((Path(__file__).parent.parent / 'templates').resolve()))
 app.include_router(create_admin_router(get_conn, templates))
-
+app.include_router(create_students_import_router(get_conn))
+app.include_router(create_supervisors_import_router(get_conn))
+app.include_router(create_matching_router(get_conn))
 
 def _truthy(val: Optional[str]) -> bool:
     return str(val or '').strip().lower() in ('1', 'true', 'yes', 'y', 'on')
-
-
-def _normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
-    if not raw:
-        return None
-    s = (raw or '').strip()
-    if s.startswith('@'):
-        s = s[1:]
-    if s.lower().startswith(('http://t.me/', 'https://t.me/', 'http://telegram.me/', 'https://telegram.me/')):
-        return s
-    import re
-    m = re.search(r"(?:https?://)?t(?:elegram)?\.me/([A-Za-z0-9_]+)", s)
-    if m:
-        return f"https://t.me/{m.group(1)}"
-    s = re.sub(r"[^A-Za-z0-9_]", "", s)
-    return f"https://t.me/{s}" if s else None
-
-
-def _extract_tg_username(raw: Optional[str]) -> Optional[str]:
-    if not raw:
-        return None
-    s = str(raw).strip()
-    if s.startswith('@'):
-        s = s[1:]
-    import re
-    m = re.search(r"(?:https?://)?t(?:elegram)?\.me/([A-Za-z0-9_]+)", s)
-    if m:
-        return m.group(1)
-    s = re.sub(r"[^A-Za-z0-9_]", "", s)
-    return s or None
 
 
 def _read_csv_rows(p: Path) -> List[Dict[str, str]]:
@@ -189,26 +164,6 @@ def _read_csv_rows(p: Path) -> List[Dict[str, str]]:
 
 
 
-def _is_http_url(s: Optional[str]) -> bool:
-    return bool(s) and str(s).strip().lower().startswith(('http://', 'https://'))
-
-
-def _process_cv(conn, user_id: int, cv_val: Optional[str]) -> Optional[str]:
-    val = (cv_val or '').strip()
-    if not val:
-        return None
-    # Already our media link
-    if val.startswith('/media/'):
-        return val
-    # External link -> download and persist
-    if _is_http_url(val):
-        try:
-            _mid, public = persist_media_from_url(conn, user_id, val, category='cv')
-            return public
-        except Exception as e:
-            print(f'CV download failed for user {user_id}: {e}')
-            return cv_val
-    return cv_val
 def _maybe_test_import():
     if not _truthy(os.getenv('TEST_IMPORT')):
         return
@@ -409,7 +364,7 @@ async def _startup_event():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_direction ON topics(direction)")
             except Exception:
                 pass
-            # student_profiles schema is defined in 01_schema.sql; no runtime migration for team_role
+            # student_profiles schema is defined in schema.sql; no runtime migration for team_role
             # Approved links
             try:
                 cur.execute("ALTER TABLE topics ADD COLUMN IF NOT EXISTS approved_supervisor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL")
@@ -686,8 +641,8 @@ def api_get_sheets_config():
 
 @app.get('/api/whoami', response_class=JSONResponse)
 def api_whoami(tg_id: Optional[int] = Query(None), username: Optional[str] = Query(None)):
-    uname = _extract_tg_username(username)
-    link = _normalize_telegram_link(username) if username else None
+    uname = extract_telegram_username(username)
+    link = normalize_telegram_link(username) if username else None
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         if tg_id:
             cur.execute(
@@ -719,7 +674,7 @@ def api_whoami(tg_id: Optional[int] = Query(None), username: Optional[str] = Que
 
 @app.post('/api/bind-telegram', response_class=JSONResponse)
 def api_bind_telegram(user_id: int = Form(...), tg_id: Optional[str] = Form(None), username: Optional[str] = Form(None)):
-    link = _normalize_telegram_link(username) if username else None
+    link = normalize_telegram_link(username) if username else None
     tg_id_val = parse_optional_int(tg_id)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -748,9 +703,9 @@ def api_self_register(
     r = (role or '').strip().lower()
     if r not in ('student', 'supervisor'):
         return {'status': 'error', 'message': 'role must be student or supervisor'}
-    link = _normalize_telegram_link(username) if username else None
+    link = normalize_telegram_link(username) if username else None
     tg_id_val = parse_optional_int(tg_id)
-    tg_id_for_name = _extract_tg_username(username) or (str(tg_id).strip() if tg_id else '')
+    tg_id_for_name = extract_telegram_username(username) or (str(tg_id).strip() if tg_id else '')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             '''
@@ -813,7 +768,7 @@ def api_update_student_profile(
         if cv is None:
             cv_val = existing.get('cv') if existing else None
         else:
-            cv_val = _process_cv(conn, user_id, normalize_optional_str(cv))
+            cv_val = process_cv(conn, user_id, normalize_optional_str(cv))
         skills_to_learn_val = (
             normalize_optional_str(skills_to_learn)
             if skills_to_learn is not None
@@ -1180,478 +1135,6 @@ def api_update_role(
     return {'status': 'ok', 'topic_id': row['topic_id']}
 
 
-@app.post('/api/import-sheet', response_class=JSONResponse)
-def api_import_sheet(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
-    try:
-        service_account_file = resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
-        # Fast TLS reachability check for clearer SSL errors
-        try:
-            import requests as _requests
-            _requests.get('https://www.googleapis.com/generate_204', timeout=5)
-        except Exception as _tls_e:
-            # Continue, but log for diagnostics
-            try:
-                print(f"/api/import-sheet TLS preflight warning: {type(_tls_e).__name__}: {_tls_e}")
-            except Exception:
-                pass
-        try:
-            import os as _os
-            if not _os.path.exists(service_account_file):
-                return {'status': 'error', 'message': f'SERVICE_ACCOUNT_FILE not found: {service_account_file}'}
-        except Exception:
-            pass
-        rows = fetch_normalized_rows(
-            spreadsheet_id=spreadsheet_id,
-            sheet_name=sheet_name,
-            service_account_file=service_account_file,
-        )
-        if (os.getenv('LOG_LEVEL') or '').upper() == 'DEBUG':
-            try:
-                print(f"/api/import-sheet: rows={len(rows)} sheet_id={spreadsheet_id} sheet_name={sheet_name}")
-            except Exception:
-                pass
-
-        inserted_users = 0
-        inserted_profiles = 0
-        inserted_topics = 0
-
-        with get_conn() as conn, conn.cursor() as cur:
-            for idx, r in enumerate(rows):
-                full_name = (r.get('full_name') or '').strip()
-                email = (r.get('email') or '').strip()
-                if not (full_name or email):
-                    continue
-
-                # Find or create user
-                if email:
-                    cur.execute("SELECT id FROM users WHERE LOWER(email)=LOWER(%s) AND role='student' LIMIT 1", (email,))
-                else:
-                    cur.execute("SELECT id FROM users WHERE full_name=%s AND role='student' LIMIT 1", (full_name,))
-                row = cur.fetchone()
-                if row:
-                    user_id = row[0]
-                else:
-                    cur.execute(
-                        '''
-                        INSERT INTO users(full_name, email, role, created_at, updated_at)
-                        VALUES (%s, %s, 'student', now(), now())
-                        RETURNING id
-                        ''', (full_name, (email or None)),
-                    )
-                    user_id = cur.fetchone()[0]
-                    inserted_users += 1
-
-                # Update telegram username and consents if present
-                updates = []
-                params: List[Any] = []
-                if r.get('telegram'):
-                    tg = _normalize_telegram_link(r.get('telegram'))
-                    if tg:
-                        updates.append('username=%s')
-                        params.append(tg)
-                if r.get('consent_personal') is not None:
-                    updates.append('consent_personal=%s')
-                    params.append(r['consent_personal'])
-                if r.get('consent_private') is not None:
-                    updates.append('consent_private=%s')
-                    params.append(r['consent_private'])
-                if updates:
-                    params.append(user_id)
-                    try:
-                        cur.execute(
-                            f"UPDATE users SET {', '.join(updates)}, updated_at=now() WHERE id=%s",
-                            tuple(params),
-                        )
-                    except TypeError as te:
-                        try:
-                            print(f"/api/import-sheet TypeError at row {idx} during users UPDATE: {te}. updates={updates} params={params}")
-                        except Exception:
-                            pass
-                        raise RuntimeError(f"row {idx}: {type(te).__name__}: {te}")
-
-                # Upsert student profile
-                cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
-                exists = cur.fetchone() is not None
-                skills_have = ', '.join(r.get('hard_skills_have') or []) or None
-                skills_want = ', '.join(r.get('hard_skills_want') or []) or None
-                interests = ', '.join(r.get('interests') or []) or None
-                requirements = r.get('supervisor_preference')
-
-                if exists:
-                    try:
-                        cur.execute(
-                            '''
-                            UPDATE student_profiles
-                            SET program=%s, skills=%s, interests=%s, cv=%s, requirements=%s,
-                                skills_to_learn=%s, achievements=%s, supervisor_pref=%s, groundwork=%s,
-                                wants_team=%s, team_role=%s, team_has=%s, team_needs=%s,
-                                apply_master=%s, workplace=%s,
-                                preferred_team_track=%s, dev_track=%s, science_track=%s, startup_track=%s,
-                                final_work_pref=%s
-                            WHERE user_id=%s
-                        ''', (
-                            r.get('program'),
-                            skills_have,
-                            interests, _process_cv(conn, user_id, r.get('cv')),
-                            requirements,
-                            skills_want,
-                            r.get('achievements'),
-                            r.get('supervisor_preference'),
-                            r.get('groundwork'),
-                            r.get('wants_team'),
-                            r.get('team_role'),
-                            r.get('team_has'),
-                            r.get('team_needs'),
-                            r.get('apply_master'),
-                            r.get('workplace'),
-                            r.get('preferred_team_track'),
-                            r.get('dev_track'),
-                            r.get('science_track'),
-                            r.get('startup_track'),
-                            r.get('final_work_preference'),
-                            user_id,
-                        ),
-                        )
-                    except TypeError as te:
-                        try:
-                            print(f"/api/import-sheet TypeError at row {idx} during student_profiles UPDATE: {te}. row={r}")
-                        except Exception:
-                            pass
-                        raise RuntimeError(f"row {idx}: {type(te).__name__}: {te}")
-                else:
-                    try:
-                        cur.execute(
-                            '''
-                            INSERT INTO student_profiles(
-                                user_id, program, skills, interests, cv, requirements,
-                                skills_to_learn, achievements, supervisor_pref, groundwork,
-                                wants_team, team_role, team_has, team_needs, apply_master, workplace,
-                                preferred_team_track, dev_track, science_track, startup_track, final_work_pref
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s,
-                                    %s, %s, %s, %s,
-                                    %s, %s, %s, %s, %s,
-                                    %s, %s, %s, %s, %s, %s)
-                        ''', (
-                            user_id,
-                            r.get('program'),
-                            skills_have,
-                            interests, _process_cv(conn, user_id, r.get('cv')),
-                            requirements,
-                            skills_want,
-                            r.get('achievements'),
-                            r.get('supervisor_preference'),
-                            r.get('groundwork'),
-                            r.get('wants_team'),
-                            r.get('team_role'),
-                            r.get('team_has'),
-                            r.get('team_needs'),
-                            r.get('apply_master'),
-                            r.get('workplace'),
-                            r.get('preferred_team_track'),
-                            r.get('dev_track'),
-                            r.get('science_track'),
-                            r.get('startup_track'),
-                            r.get('final_work_preference'),
-                        ),
-                        )
-                    except TypeError as te:
-                        try:
-                            print(f"/api/import-sheet TypeError at row {idx} during student_profiles INSERT: {te}. row={r}")
-                        except Exception:
-                            pass
-                        raise RuntimeError(f"row {idx}: {type(te).__name__}: {te}")
-                inserted_profiles += 1
-
-                # Create student's own topic if provided
-                topic = r.get('topic')
-                if r.get('has_own_topic') and topic and (topic.get('title') or '').strip():
-                    title = topic.get('title').strip()
-                    cur.execute('SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s', (user_id, title))
-                    if not cur.fetchone():
-                        desc = topic.get('description') or ''
-                        groundwork = r.get('groundwork')
-                        if groundwork:
-                            desc = (desc or '').strip()
-                            tail = f"\n\n????????? ?????: {groundwork}".strip()
-                            desc = f"{desc}\n{tail}" if desc else tail
-                        practical = (topic.get('practical_importance') or None)
-                        if practical:
-                            desc = (desc or '').strip()
-                            tail2 = f"\n\n???????????? ??????????: {practical}".strip()
-                            desc = f"{desc}\n{tail2}" if desc else tail2
-                        cur.execute(
-                            '''
-                            INSERT INTO topics(author_user_id, title, description, expected_outcomes,
-                                               required_skills, seeking_role, is_active, created_at, updated_at)
-                            VALUES (%s, %s, %s, %s, %s, 'supervisor', TRUE, now(), now())
-                            ''', (
-                                user_id,
-                                title,
-                                desc,
-                                topic.get('expected_outcomes'),
-                                skills_have,
-                            ),
-                        )
-                        inserted_topics += 1
-
-        return {
-            'status': 'success',
-            'message': f'Ð¿â‰¤Ð¿â•ªÐ¿Â©Ð¿â•¬Ñâ”€Ñâ”Œ: users+{inserted_users}, profiles~{inserted_profiles}, topics+{inserted_topics}',
-            'stats': {
-                'inserted_users': inserted_users,
-                'inserted_profiles': inserted_profiles,
-                'inserted_topics': inserted_topics,
-                'total_rows_in_sheet': len(rows) if rows else 0,
-            }
-        }
-    except Exception as e:
-        err = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-        return {'status': 'error', 'message': err}
-
-
-# =============================
-# Import Supervisors (2nd sheet)
-# =============================
-
-def _llm_extract_topics(text: str) -> Optional[List[Dict[str, Any]]]:
-    if not text or not text.strip():
-        return None
-    if LLM_CLIENT is None:
-        return None
-
-    functions = [
-        {
-            'name': 'extract_topics',
-            'description': 'Ð¿â‰¤Ð¿â•¥Ð¿â•¡Ð¿â•©Ð¿â•£Ð¿â•¨Ð¿â•¦ Ñâ”‚Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•¬Ð¿â•¨ Ñâ”ŒÐ¿â•£Ð¿â•ª Ð¿â•¦Ð¿â•¥ Ñâ”ŒÐ¿â•£Ð¿â•¨Ñâ”‚Ñâ”ŒÐ¿â•Ÿ Ñâ”‚ Ð¿â•¨Ñâ”€Ð¿â•ŸÑâ”ŒÐ¿â•¨Ð¿â•¦Ð¿â•ªÐ¿â•¦ Ð¿Â©Ð¿â•¬Ð¿â•©Ñâ–Ð¿â•ªÐ¿â•¦.',
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'topics': {
-                        'type': 'array',
-                        'items': {
-                            'type': 'object',
-                            'properties': {
-                                'title': {'type': 'string'},
-                                'description': {'type': 'string'},
-                                'expected_outcomes': {'type': 'string'},
-                                'required_skills': {'type': 'string'}
-                            },
-                            'required': ['title']
-                        },
-                        'minItems': 1
-                    }
-                },
-                'required': ['topics']
-            }
-        }
-    ]
-
-    messages = [
-        {
-            'role': 'system',
-            'content': 'Ð¿â•’Ñâ–€ Ð¿â•ŸÑâ”‚Ñâ”‚Ð¿â•¦Ñâ”‚Ñâ”ŒÐ¿â•£Ð¿â•«Ñâ”Œ, Ð¿â•¨Ð¿â•¬Ñâ”ŒÐ¿â•¬Ñâ”€Ñâ–€Ð¿â•§ Ñâ”‚Ñâ”ŒÑâ”€Ñâ”Ð¿â•¨Ñâ”ŒÑâ”Ñâ”€Ð¿â•¦Ñâ”€Ñâ”Ð¿â•£Ñâ”Œ Ñâ”‚Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•¬Ð¿â•¨ Ñâ”ŒÐ¿â•£Ð¿â•ª Ð¿â–“Ð¿Â Ð¿â•. Ð¿â–“Ñâ”‚Ð¿â•£Ð¿ÐÐ¿â•¢Ð¿â•Ÿ Ð¿â•¬Ñâ”ŒÐ¿â•¡Ð¿â•£Ñâ”¤Ð¿â•ŸÐ¿â•§ Ð¿Â©Ð¿â•¬-Ñâ”€Ñâ”Ñâ”‚Ñâ”‚Ð¿â•¨Ð¿â•¦. Ð¿â–“Ð¿â•£Ñâ”€Ð¿â•«Ð¿â•¦ Ñâ”ŒÐ¿â•¬Ð¿â•©Ñâ–„Ð¿â•¨Ð¿â•¬ Ñâ”‚Ñâ”ŒÑâ”€Ñâ”Ð¿â•¨Ñâ”ŒÑâ”Ñâ”€Ð¿â•¦Ñâ”€Ð¿â•¬Ð¿â•¡Ð¿â•ŸÐ¿â•«Ð¿â•«Ñâ–€Ð¿â•§ Ñâ”€Ð¿â•£Ð¿â•¥Ñâ”Ð¿â•©Ñâ–„Ñâ”ŒÐ¿â•ŸÑâ”Œ Ñâ”¤Ð¿â•£Ñâ”€Ð¿â•£Ð¿â•¥ Ñâ””Ñâ”Ð¿â•«Ð¿â•¨Ñâ”œÐ¿â•¦Ñâ–Œ.'
-        },
-        {
-            'role': 'user',
-            'content': f'Ð¿â•’Ð¿â•£Ð¿â•¨Ñâ”‚Ñâ”Œ, Ñâ”‚Ð¿â•¬Ð¿â•¢Ð¿â•£Ñâ”€Ð¿â•¤Ð¿â•ŸÑâ”´Ð¿â•¦Ð¿â•§ Ñâ”ŒÐ¿â•£Ð¿â•ªÑâ–€ Ð¿â•¦Ð¿â•©Ð¿â•¦ Ñâ”ŒÐ¿â•£Ð¿â•ªÐ¿â•ŸÑâ”ŒÐ¿â•¦Ð¿â•¨Ð¿â•¦ Ð¿â•¢Ð¿â•©Ñâ– Ð¿â–“Ð¿Â Ð¿â• (Ð¿â•ªÐ¿â•¬Ð¿ÐÑâ”Ñâ”Œ Ð¿â• Ñâ–€Ñâ”ŒÑâ–„ Ð¿Â©Ð¿â•£Ñâ”€Ð¿â•£Ñâ”¤Ð¿â•¦Ñâ”‚Ð¿â•©Ð¿â•£Ð¿â•«Ñâ–€ Ñâ”¤Ð¿â•£Ñâ”€Ð¿â•£Ð¿â•¥ Ð¿â•¥Ð¿â•ŸÐ¿Â©Ñâ–Ñâ”ŒÑâ–€Ð¿â•£, Ñâ”ŒÐ¿â•¬Ñâ”¤Ð¿â•¨Ð¿â•¦ Ñâ”‚ Ð¿â•¥Ð¿â•ŸÐ¿Â©Ñâ–Ñâ”ŒÐ¿â•¬Ð¿â•§, Ñâ”‚Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•¨Ð¿â•¬Ð¿â•ª):\n\n{text}\n\nÐ¿â–“Ñâ–€Ð¿â•¢Ð¿â•£Ð¿â•©Ð¿â•¦ Ð¿â•¬Ñâ”ŒÐ¿â•¢Ð¿â•£Ð¿â•©Ñâ–„Ð¿â•«Ñâ–€Ð¿â•£ Ñâ”ŒÐ¿â•£Ð¿â•ªÑâ–€. Ð¿âˆ™Ñâ”‚Ð¿â•©Ð¿â•¦ Ð¿â•¢Ð¿â•£Ñâ”ŒÐ¿â•ŸÐ¿â•©Ð¿â•£Ð¿â•§ Ð¿â•ªÐ¿â•ŸÐ¿â•©Ð¿â•¬ Ð‘â”€â–  Ñâ”‚Ñâ””Ð¿â•¬Ñâ”€Ð¿â•ªÑâ”Ð¿â•©Ð¿â•¦Ñâ”€Ñâ”Ð¿â•§ Ð¿â•¨Ñâ”€Ð¿â•ŸÑâ”ŒÐ¿â•¨Ð¿â•¬Ð¿â•£ Ð¿â•¬Ð¿Â©Ð¿â•¦Ñâ”‚Ð¿â•ŸÐ¿â•«Ð¿â•¦Ð¿â•£, Ð¿â•¬Ð¿â•¤Ð¿â•¦Ð¿â•¢Ð¿â•ŸÐ¿â•£Ð¿â•ªÑâ–€Ð¿â•£ Ñâ”€Ð¿â•£Ð¿â•¥Ñâ”Ð¿â•©Ñâ–„Ñâ”ŒÐ¿â•ŸÑâ”ŒÑâ–€ Ð¿â•¦ Ñâ”ŒÑâ”€Ð¿â•£Ð¿â• Ñâ”Ð¿â•£Ð¿â•ªÑâ–€Ð¿â•£ Ð¿â•«Ð¿â•ŸÐ¿â•¡Ñâ–€Ð¿â•¨Ð¿â•¦ Ð¿Â©Ð¿â•¬ Ñâ”‚Ð¿â•ªÑâ–€Ñâ”‚Ð¿â•©Ñâ”.'
-        }
-    ]
-
-    try:
-        resp = LLM_CLIENT.chat.completions.create(
-            model=PROXY_MODEL,
-            messages=messages,
-            functions=functions,
-            function_call={'name': 'extract_topics'},
-            temperature=0.2,
-        )
-    except Exception as e:
-        print(f"LLM extract error: {e}")
-        return None
-
-    if not resp.choices or not resp.choices[0].message:
-        return None
-    msg = resp.choices[0].message
-    fc = getattr(msg, 'function_call', None)
-    if not fc or not getattr(fc, 'arguments', None):
-        return None
-    try:
-        import json
-        parsed = json.loads(fc.arguments)
-        topics = parsed.get('topics', [])
-        norm = []
-        for t in topics:
-            title = (t.get('title') or '').strip()
-            if not title:
-                continue
-            norm.append({
-                'title': title,
-                'description': (t.get('description') or '').strip() or None,
-                'expected_outcomes': (t.get('expected_outcomes') or '').strip() or None,
-                'required_skills': (t.get('required_skills') or '').strip() or None,
-            })
-        return norm or None
-    except Exception:
-        return None
-
-
-def _fallback_extract_topics(text: str) -> List[Dict[str, Any]]:
-    if not text:
-        return []
-    import re
-    parts = re.split(r'[\n;Ð‘â”€â•’\-\u2022]+|\s{2,}', text)
-    res = []
-    for p in parts:
-        title = (p or '').strip(' \t\r\n.-Ð‘â”€â•’')
-        if not title:
-            continue
-        # Avoid overly short tokens
-        if len(title) < 3:
-            continue
-        res.append({'title': title, 'description': None, 'expected_outcomes': None, 'required_skills': None})
-    # Deduplicate by title
-    seen = set()
-    uniq = []
-    for t in res:
-        if t['title'].lower() in seen:
-            continue
-        seen.add(t['title'].lower())
-        uniq.append(t)
-    return uniq
-
-
-@app.post('/api/import-supervisors', response_class=JSONResponse)
-def api_import_supervisors(spreadsheet_id: str = Form(...), sheet_name: Optional[str] = Form(None)):
-    try:
-        service_account_file = resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE', 'service-account.json'))
-        rows = fetch_supervisor_rows(
-            spreadsheet_id=spreadsheet_id,
-            sheet_name=sheet_name,  # default: 2Ð¿â•§ Ð¿â•©Ð¿â•¦Ñâ”‚Ñâ”Œ, Ð¿â•£Ñâ”‚Ð¿â•©Ð¿â•¦ None
-            service_account_file=service_account_file,
-        )
-
-        inserted_users = 0
-        upserted_profiles = 0
-        inserted_topics = 0
-
-        with get_conn() as conn, conn.cursor() as cur:
-            for r in rows:
-                full_name = (r.get('full_name') or '').strip()
-                email = (r.get('email') or '').strip() or None
-                if not (full_name or email):
-                    continue
-
-                # Find or create supervisor user
-                if email:
-                    cur.execute("SELECT id FROM users WHERE LOWER(email)=LOWER(%s) AND role='supervisor' LIMIT 1", (email,))
-                else:
-                    cur.execute("SELECT id FROM users WHERE full_name=%s AND role='supervisor' LIMIT 1", (full_name,))
-                row = cur.fetchone()
-                if row:
-                    user_id = row[0]
-                else:
-                    cur.execute(
-                        """
-                        INSERT INTO users(full_name, email, role, created_at, updated_at)
-                        VALUES (%s, %s, 'supervisor', now(), now())
-                        RETURNING id
-                        """, (full_name, email),
-                    )
-                    user_id = cur.fetchone()[0]
-                    inserted_users += 1
-
-                # Update telegram username if provided
-                updates = []
-                params: List[Any] = []
-                if r.get('telegram'):
-                    tg = _normalize_telegram_link(r.get('telegram'))
-                    if tg:
-                        updates.append('username=%s')
-                        params.append(tg)
-                if updates:
-                    params.append(user_id)
-                    cur.execute(f"UPDATE users SET {', '.join(updates)}, updated_at=now() WHERE id=%s", tuple(params))
-
-                # Upsert supervisor profile (interests <- area; requirements <- extra_info)
-                cur.execute('SELECT 1 FROM supervisor_profiles WHERE user_id=%s', (user_id,))
-                exists = cur.fetchone() is not None
-                if exists:
-                    cur.execute(
-                        """
-                        UPDATE supervisor_profiles
-                        SET interests=%s, requirements=%s
-                        WHERE user_id=%s
-                        """,
-                        (r.get('area') or None, r.get('extra_info') or None, user_id),
-                    )
-                else:
-                    cur.execute(
-                        """
-                        INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """,
-                        (user_id, None, None, None, r.get('area') or None, r.get('extra_info') or None),
-                    )
-                upserted_profiles += 1
-
-                # Extract and insert supervisor's topics (with direction when available)
-                def _insert_from_text(txt: Optional[str], direction: Optional[int]):
-                    nonlocal inserted_topics
-                    if not txt or not (txt.strip()):
-                        return
-                    topics = _llm_extract_topics(txt) or _fallback_extract_topics(txt)
-                    for t in topics:
-                        title = (t.get('title') or '').strip()
-                        if not title:
-                            continue
-                        # Avoid duplicates per direction
-                        cur.execute(
-                            'SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)',
-                            (user_id, title, direction),
-                        )
-                        if cur.fetchone():
-                            continue
-                        cur.execute(
-                            """
-                            INSERT INTO topics(author_user_id, title, description, expected_outcomes,
-                                               required_skills, direction, seeking_role, is_active, created_at, updated_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, 'student', TRUE, now(), now())
-                            """,
-                            (
-                                user_id,
-                                title,
-                                t.get('description'),
-                                t.get('expected_outcomes'),
-                                t.get('required_skills'),
-                                direction,
-                            ),
-                        )
-                        inserted_topics += 1
-
-                # Try per-direction fields first
-                _insert_from_text(r.get('topics_09'), 9)
-                _insert_from_text(r.get('topics_11'), 11)
-                _insert_from_text(r.get('topics_45'), 45)
-                # Fallback to unified text (no direction)
-                if not any((r.get('topics_09'), r.get('topics_11'), r.get('topics_45'))):
-                    _insert_from_text(r.get('topics_text'), None)
-
-        return {
-            'status': 'success',
-            'message': f'Ð¿â‰¤Ð¿â•ªÐ¿Â©Ð¿â•¬Ñâ”€Ñâ”Œ Ñâ”€Ñâ”Ð¿â•¨Ð¿â•¬Ð¿â•¡Ð¿â•¬Ð¿â•¢Ð¿â•¦Ñâ”ŒÐ¿â•£Ð¿â•©Ð¿â•£Ð¿â•§: users+{inserted_users}, profiles~{upserted_profiles}, topics+{inserted_topics}',
-            'stats': {
-                'inserted_users': inserted_users,
-                'upserted_profiles': upserted_profiles,
-                'inserted_topics': inserted_topics,
-                'total_rows_in_sheet': len(rows) if rows else 0,
-            }
-        }
-    except Exception as e:
-        err = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-        return {'status': 'error', 'message': err}
-
-
 @app.get('/latest', response_class=JSONResponse)
 def latest(kind: str = Query('topics', enum=['students', 'supervisors', 'topics']), offset: int = 0):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1699,34 +1182,6 @@ def latest(kind: str = Query('topics', enum=['students', 'supervisors', 'topics'
             serializable_rows.append(row_dict)
 
     return JSONResponse(serializable_rows)
-
-
-@app.post('/match-topic', response_class=JSONResponse)
-def match_topic(topic_id: int = Form(...), target_role: str = Form('student')):
-    with get_conn() as conn:
-        result = handle_match(conn, topic_id=topic_id, target_role=target_role)
-    return JSONResponse(result)
-
-
-@app.post('/match-student', response_class=JSONResponse)
-def match_student(student_user_id: int = Form(...)):
-    with get_conn() as conn:
-        result = handle_match_student(conn, student_user_id=student_user_id)
-    return JSONResponse(result)
-
-
-@app.post('/match-supervisor', response_class=JSONResponse)
-def match_supervisor_user(supervisor_user_id: int = Form(...)):
-    with get_conn() as conn:
-        result = handle_match_supervisor_user(conn, supervisor_user_id=supervisor_user_id)
-    return JSONResponse(result)
-
-
-@app.post('/match-role', response_class=JSONResponse)
-def match_role(role_id: int = Form(...)):
-    with get_conn() as conn:
-        result = handle_match_role(conn, role_id=role_id)
-    return JSONResponse(result)
 
 
 @app.get('/media/{media_id}')

@@ -37,7 +37,7 @@ services:
         - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
         - SERVER_URL=http://server:8000
       volumes:
-        - ./bot:/app
+        - ./bot:/app/bot
         - ./templates:/app/templates:ro
       depends_on:
         - server
@@ -53,7 +53,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
