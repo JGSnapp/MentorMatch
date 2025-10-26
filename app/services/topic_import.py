@@ -7,8 +7,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from psycopg2.extensions import connection
 
-from media_store import persist_media_from_url
-from matching.embeddings import (
+from ..media_store import persist_media_from_url
+from ..matching.embeddings import (
     refresh_student_embedding,
     refresh_supervisor_embedding,
     refresh_topic_embedding,

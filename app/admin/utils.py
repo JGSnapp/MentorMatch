@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, Any
 
-from media_store import persist_media_from_url
+from ...media_store import persist_media_from_url
 
 
 def normalize_telegram_link(raw: Optional[str]) -> Optional[str]:

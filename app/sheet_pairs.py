@@ -6,7 +6,7 @@ from typing import Any, Callable, List, Optional
 import gspread
 from google.oauth2.service_account import Credentials
 
-from utils import resolve_service_account_path
+from .utils import resolve_service_account_path
 
 
 HEADERS_RU = ['Тема', 'Роль', 'Студент', 'Руководитель']

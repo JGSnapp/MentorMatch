@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from parse_gform import fetch_normalized_rows, fetch_supervisor_rows
-from utils import resolve_service_account_path
+from ..parse_gform import fetch_normalized_rows, fetch_supervisor_rows
+from ..utils import resolve_service_account_path
 
 
 def ensure_service_account_file(path: str) -> str:

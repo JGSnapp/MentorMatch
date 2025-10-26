@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from matching.settings import LLM_TEMPERATURE, PROXY_API_KEY, PROXY_BASE_URL, PROXY_MODEL
+from ..matching.settings import LLM_TEMPERATURE, PROXY_API_KEY, PROXY_BASE_URL, PROXY_MODEL
 
 logger = logging.getLogger(__name__)
 

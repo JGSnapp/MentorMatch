@@ -8,12 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from parse_gform import fetch_normalized_rows, fetch_supervisor_rows
-from sheet_pairs import sync_roles_sheet
+from ...parse_gform import fetch_normalized_rows, fetch_supervisor_rows
+from ...sheet_pairs import sync_roles_sheet
 
 from ..context import AdminContext
 from ..utils import normalize_telegram_link, process_cv
-from matching.embeddings import (
+from ...matching.embeddings import (
     refresh_student_embedding,
     refresh_supervisor_embedding,
     refresh_topic_embedding,

@@ -7,11 +7,11 @@ import psycopg2.extras
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from utils import parse_optional_int
+from ...utils import parse_optional_int
 
 from ..context import AdminContext
 from ..utils import normalize_telegram_link
-from matching.embeddings import (
+from ...matching.embeddings import (
     refresh_student_embedding,
     refresh_supervisor_embedding,
 )

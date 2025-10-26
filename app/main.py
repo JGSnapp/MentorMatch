@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import logging
 from typing import Optional, List, Dict, Any
@@ -8,65 +8,27 @@ from urllib import error as urllib_error
 
 from fastapi import FastAPI, Form, Query, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi.templating import Jinja2Templates
 import psycopg2
 import psycopg2.extras
-from dotenv import load_dotenv
-from media_store import MEDIA_ROOT
-from utils import parse_optional_int, normalize_optional_str, resolve_service_account_path
+from .config import configure_logging, get_conn, get_templates
+from .media_store import MEDIA_ROOT
+from .utils import parse_optional_int, normalize_optional_str, resolve_service_account_path
 
-from admin import create_admin_router
-from sheet_pairs import sync_roles_sheet
-
-from api import (
-    create_matching_router,
-    create_students_import_router,
-    create_supervisors_import_router,
-)
-from services.topic_import import (
+from .sheet_pairs import sync_roles_sheet
+from .services.topic_import import (
     normalize_telegram_link,
     extract_telegram_username,
     process_cv,
 )
-from matching.embeddings import (
+from .matching.embeddings import (
     refresh_role_embedding,
     refresh_student_embedding,
     refresh_supervisor_embedding,
     refresh_topic_embedding,
 )
-
-def _configure_logging() -> int:
-    level_name = (os.getenv('LOG_LEVEL') or 'INFO').upper()
-    level = getattr(logging, level_name, logging.INFO)
-    root_logger = logging.getLogger()
-    if not root_logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
-        root_logger.addHandler(handler)
-    root_logger.setLevel(level)
-    return level
-
-
-load_dotenv()
-LOG_LEVEL = _configure_logging()
+configure_logging()
 
 logger = logging.getLogger(__name__)
-logger.setLevel(LOG_LEVEL)
-
-def build_db_dsn() -> str:
-    dsn = os.getenv('DATABASE_URL')
-    if dsn:
-        return dsn
-    user = os.getenv('POSTGRES_USER', 'mentormatch')
-    password = os.getenv('POSTGRES_PASSWORD', 'secret')
-    host = os.getenv('POSTGRES_HOST', 'localhost')
-    port = os.getenv('POSTGRES_PORT', '5432')
-    db = os.getenv('POSTGRES_DB', 'mentormatch')
-    return f'postgresql://{user}:{password}@{host}:{port}/{db}'
-
-
-def get_conn():
-    return psycopg2.connect(build_db_dsn())
 
 
 def _shorten(text: Optional[str], limit: int = 60) -> str:
@@ -149,11 +111,7 @@ def _send_telegram_notification(telegram_id: Optional[Any], text: str, *, button
 
 
 app = FastAPI(title='MentorMatch Admin MVP')
-templates = Jinja2Templates(directory=str((Path(__file__).parent.parent / 'templates').resolve()))
-app.include_router(create_admin_router(get_conn, templates))
-app.include_router(create_students_import_router(get_conn))
-app.include_router(create_supervisors_import_router(get_conn))
-app.include_router(create_matching_router(get_conn))
+templates = get_templates()
 
 def _truthy(val: Optional[str]) -> bool:
     return str(val or '').strip().lower() in ('1', 'true', 'yes', 'y', 'on')

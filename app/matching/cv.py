@@ -6,7 +6,7 @@ from typing import Optional
 
 from psycopg2.extensions import connection
 
-from media_store import MEDIA_ROOT
+from ..media_store import MEDIA_ROOT
 from text_extract import extract_text_from_file
 
 

@@ -8,11 +8,11 @@ import psycopg2.extras
 from fastapi import APIRouter, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from sheet_pairs import sync_roles_sheet
-from utils import parse_optional_int
+from ...sheet_pairs import sync_roles_sheet
+from ...utils import parse_optional_int
 
 from ..context import AdminContext
-from matching.embeddings import refresh_role_embedding, refresh_topic_embedding
+from ...matching.embeddings import refresh_role_embedding, refresh_topic_embedding
 
 PAGE_LIMIT = 20
 

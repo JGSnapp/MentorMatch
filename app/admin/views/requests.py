@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Form
 from fastapi.responses import RedirectResponse
 
-from utils import parse_optional_int
+from ...utils import parse_optional_int
 
 from ..context import AdminContext
 

@@ -8,12 +8,12 @@ from fastapi import APIRouter, Form
 from fastapi.responses import JSONResponse
 from psycopg2.extensions import connection
 
-from services.google_sheets import (
+from ..services.google_sheets import (
     ensure_service_account_file,
     google_tls_preflight,
     load_student_rows,
 )
-from services.topic_import import import_students
+from ..services.topic_import import import_students
 
 
 def create_students_import_router(get_conn: Callable[[], connection]) -> APIRouter:

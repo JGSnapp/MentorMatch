@@ -2,7 +2,9 @@ version: "3.9"
 
 services:
   server:
-      build: ./server
+      build:
+        context: .
+        dockerfile: services/server/Dockerfile
       ports:
         - "8000:8000"
       healthcheck:
@@ -28,10 +30,90 @@ services:
         - PAIRS_SPREADSHEET_ID=${PAIRS_SPREADSHEET_ID}
         - SERVER_URL=${SERVER_URL}
         - BOT_API_URL=${BOT_API_URL:-http://bot:5000}
+        - GOOGLE_DATA_API_URL=${GOOGLE_DATA_API_URL:-http://google_data:8000}
+        - MATCHING_API_URL=${MATCHING_API_URL:-http://matching:8000}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
       volumes:
-        - ./server:/app
-        - ./templates:/templates
+        - ./app:/app/app
+        - ./templates:/app/templates
+        - ./services:/app/services
+      depends_on:
+        - postgres
+      restart: unless-stopped
+
+  admin:
+      build:
+        context: .
+        dockerfile: services/admin/Dockerfile
+      ports:
+        - "8001:8000"
+      environment:
+        - POSTGRES_USER=${POSTGRES_USER}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        - POSTGRES_DB=${POSTGRES_DB}
+        - POSTGRES_HOST=${POSTGRES_HOST}
+        - POSTGRES_PORT=${POSTGRES_PORT}
+        - DATABASE_URL=${DATABASE_URL}
+        - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      volumes:
+        - ./app:/app/app
+        - ./templates:/app/templates
+        - ./services:/app/services
+      depends_on:
+        - postgres
+      restart: unless-stopped
+
+  google_data:
+      build:
+        context: .
+        dockerfile: services/google_data/Dockerfile
+      ports:
+        - "8002:8000"
+      environment:
+        - PROXY_API_KEY=${PROXY_API_KEY}
+        - PROXY_BASE_URL=${PROXY_BASE_URL}
+        - PROXY_MODEL=${PROXY_MODEL:-gpt-4o-mini}
+        - EMBEDDING_MODELS_DIR=/data/embedding-models
+        - POSTGRES_USER=${POSTGRES_USER}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        - POSTGRES_DB=${POSTGRES_DB}
+        - POSTGRES_HOST=${POSTGRES_HOST}
+        - POSTGRES_PORT=${POSTGRES_PORT}
+        - DATABASE_URL=${DATABASE_URL}
+        - SPREADSHEET_ID=${SPREADSHEET_ID}
+        - SERVICE_ACCOUNT_FILE=${SERVICE_ACCOUNT_FILE}
+        - PAIRS_SPREADSHEET_ID=${PAIRS_SPREADSHEET_ID}
+        - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      volumes:
+        - ./app:/app/app
+        - ./templates:/app/templates
+        - ./services:/app/services
+      depends_on:
+        - postgres
+      restart: unless-stopped
+
+  matching:
+      build:
+        context: .
+        dockerfile: services/matching/Dockerfile
+      ports:
+        - "8003:8000"
+      environment:
+        - PROXY_API_KEY=${PROXY_API_KEY}
+        - PROXY_BASE_URL=${PROXY_BASE_URL}
+        - PROXY_MODEL=${PROXY_MODEL:-gpt-4o-mini}
+        - EMBEDDING_MODELS_DIR=/data/embedding-models
+        - POSTGRES_USER=${POSTGRES_USER}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        - POSTGRES_DB=${POSTGRES_DB}
+        - POSTGRES_HOST=${POSTGRES_HOST}
+        - POSTGRES_PORT=${POSTGRES_PORT}
+        - DATABASE_URL=${DATABASE_URL}
+        - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      volumes:
+        - ./app:/app/app
+        - ./templates:/app/templates
+        - ./services:/app/services
       depends_on:
         - postgres
       restart: unless-stopped
