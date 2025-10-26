@@ -2,9 +2,9 @@
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import JSONResponse
 
-from app.api import create_matching_router
-from app.config import configure_logging, get_conn
-from app.matching.embeddings import (
+from common.api import create_matching_router
+from common.config import configure_logging, get_conn
+from common.matching.embeddings import (
     refresh_role_embedding,
     refresh_student_embedding,
     refresh_supervisor_embedding,

@@ -2,12 +2,12 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse
 
-from app.api import (
+from common.api import (
     create_students_import_router,
     create_supervisors_import_router,
 )
-from app.config import configure_logging, get_conn
-from app.sheet_pairs import sync_roles_sheet
+from common.config import configure_logging, get_conn
+from common.sheet_pairs import sync_roles_sheet
 
 configure_logging()
 

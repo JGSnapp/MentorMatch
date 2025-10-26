@@ -1,8 +1,8 @@
 """FastAPI application exposing the MentorMatch admin UI."""
 from fastapi import FastAPI
 
-from app.admin import create_admin_router
-from app.config import configure_logging, get_conn, get_templates
+from common.admin import create_admin_router
+from common.config import configure_logging, get_conn, get_templates
 
 configure_logging()
 

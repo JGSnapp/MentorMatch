@@ -34,7 +34,7 @@ services:
         - MATCHING_API_URL=${MATCHING_API_URL:-http://matching:8000}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
       volumes:
-        - ./app:/app/app
+        - ./common:/app/common
         - ./templates:/app/templates
         - ./services:/app/services
       depends_on:
@@ -56,7 +56,7 @@ services:
         - DATABASE_URL=${DATABASE_URL}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
       volumes:
-        - ./app:/app/app
+        - ./common:/app/common
         - ./templates:/app/templates
         - ./services:/app/services
       depends_on:
@@ -85,7 +85,7 @@ services:
         - PAIRS_SPREADSHEET_ID=${PAIRS_SPREADSHEET_ID}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
       volumes:
-        - ./app:/app/app
+        - ./common:/app/common
         - ./templates:/app/templates
         - ./services:/app/services
       depends_on:
@@ -111,7 +111,7 @@ services:
         - DATABASE_URL=${DATABASE_URL}
         - LOG_LEVEL=${LOG_LEVEL:-INFO}
       volumes:
-        - ./app:/app/app
+        - ./common:/app/common
         - ./templates:/app/templates
         - ./services:/app/services
       depends_on:

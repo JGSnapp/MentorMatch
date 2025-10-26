@@ -16,8 +16,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefer-binary -r requirements.txt
 
-COPY app ./app
+COPY common ./common
 COPY templates ./templates
 COPY services ./services
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "common.main:app", "--host", "0.0.0.0", "--port", "8000"]
