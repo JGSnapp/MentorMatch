@@ -8,8 +8,16 @@ from telegram.ext import ContextTypes
 
 from .base import BaseHandlers
 
+MEMBER_ROLE_NAME = '%member'
+
 
 class EntityHandlers(BaseHandlers):
+    @staticmethod
+    def _is_member_role(role: Dict[str, Any]) -> bool:
+        """Определяет, является ли роль служебной ролью %member."""
+        name = (role.get('name') or '').strip().lower()
+        return bool(name) and name == MEMBER_ROLE_NAME
+
     async def cb_student_me(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_student_me."""
         uid = context.user_data.get('uid')
@@ -361,7 +369,8 @@ class EntityHandlers(BaseHandlers):
             f"ID: {t.get('id')}\n"
         )
                               
-        roles = await self._api_get(f'/api/topics/{tid}/roles') or []
+        roles_raw = await self._api_get(f'/api/topics/{tid}/roles') or []
+        roles = [r for r in roles_raw if not self._is_member_role(r)]
         lines2: List[str] = [text, '', 'Роли:']
         kb: List[List[InlineKeyboardButton]] = []
         for r in roles:
@@ -583,8 +592,40 @@ class EntityHandlers(BaseHandlers):
         title = topic.get('title') or f'#{tid}'
         if target_role == 'student':
             roles = await self._api_get(f'/api/topics/{tid}/roles') or []
+            member_role_id: Optional[int] = None
+            for r in roles:
+                if not self._is_member_role(r):
+                    continue
+                rid = self._parse_positive_int(r.get('id'))
+                if rid is not None:
+                    member_role_id = rid
+                    break
+            if member_role_id is not None:
+                default_body = f'Здравствуйте! Хотел(а) бы присоединиться к теме "{title}".'
+                prompt = (
+                    f'Напишите сообщение для автора темы «{title}».\n'
+                    'Расскажите о себе и мотивации. Для отмены — /start. Можно отправить «-», чтобы использовать шаблон.'
+                )
+                payload = {
+                    'sender_user_id': str(uid),
+                    'receiver_user_id': str(author_id),
+                    'topic_id': str(tid),
+                    'role_id': str(member_role_id),
+                    'topic_title': title,
+                    'target_role': target_role,
+                    'default_body': default_body,
+                    'return_callback': f'topic_{tid}',
+                    'source': 'topic',
+                }
+                context.user_data['application_payload'] = payload
+                context.user_data['awaiting'] = 'submit_application_body'
+                await q.message.reply_text(self._fix_text(prompt))
+                return
+
             role_choices: List[tuple[int, str]] = []
             for r in roles:
+                if self._is_member_role(r):
+                    continue
                 rid = self._parse_positive_int(r.get('id'))
                 if rid is None:
                     continue
@@ -601,12 +642,14 @@ class EntityHandlers(BaseHandlers):
                     reply_markup=self._mk(kb),
                 )
                 return
-            lines = [f'Чтобы подать заявку на тему «{title}», выберите конкретную роль:']
-            if role_choices:
-                lines.append('')
-                lines.append('Доступные роли:')
-                for _, label in role_choices:
-                    lines.append(f'• {label}')
+            lines = [
+                'В этой теме пока нет кнопки для отклика на проект без роли.',
+                'Выберите конкретную роль для подачи заявки:'
+            ]
+            lines.append('')
+            lines.append('Доступные роли:')
+            for _, label in role_choices:
+                lines.append(f'• {label}')
             kb = [
                 [InlineKeyboardButton(f'📨 {label[:40]}', callback_data=f'apply_role_{rid}')]
                 for rid, label in role_choices

@@ -42,6 +42,39 @@ LOG_LEVEL = _configure_logging()
 logger = logging.getLogger(__name__)
 logger.setLevel(LOG_LEVEL)
 
+MEMBER_ROLE_NAME = '%member'
+
+
+def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
+    """Гарантирует наличие служебной роли %member для темы."""
+    cur.execute(
+        'SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    row = cur.fetchone()
+    if row:
+        return None
+    cur.execute(
+        '''
+        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        RETURNING id
+        ''',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    inserted = cur.fetchone()
+    return inserted[0] if inserted else None
+
+
+def _normalize_role_name(role_name: Optional[str]) -> Optional[str]:
+    """Скрывает служебное имя роли %member для интерфейса сообщений."""
+    if not role_name:
+        return role_name
+    name = str(role_name).strip()
+    if not name:
+        return None
+    return None if name.lower() == MEMBER_ROLE_NAME else name
+
 
 def _sync_roles_sheet(
     spreadsheet_id: Optional[str] = None,
@@ -289,6 +322,9 @@ def _maybe_test_import():
                 topic_row = cur.fetchone()
                 if topic_row:
                     enqueue_refresh(conn, 'topic', topic_row[0])
+                    member_role_id = _ensure_member_role(cur, topic_row[0])
+                    if member_role_id:
+                        enqueue_refresh(conn, 'role', member_role_id)
             commit_with_refresh(conn)
     except Exception as e:
         print(f"TEST_IMPORT failed: {e}")
@@ -333,6 +369,22 @@ async def _startup_event():
                 '''
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_roles_topic ON roles(topic_id)")
+            cur.execute(
+                '''
+                INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+                SELECT t.id, %s, NULL, NULL, NULL, now(), now()
+                FROM topics t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM roles r
+                    WHERE r.topic_id = t.id AND r.name = %s
+                )
+                RETURNING id
+                ''',
+                (MEMBER_ROLE_NAME, MEMBER_ROLE_NAME),
+            )
+            inserted_member_roles = [row[0] for row in cur.fetchall()]
+            for role_id in inserted_member_roles:
+                enqueue_refresh(conn, 'role', role_id)
             for tbl in ("users", "topics", "roles"):
                 try:
                     cur.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS embeddings VECTOR")
@@ -563,7 +615,12 @@ def api_get_student(student_id: int):
 @app.get('/api/user-topics/{user_id}', response_class=JSONResponse)
 def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
     """Выполняет функцию api_user_topics."""
-    params = {'uid': user_id, 'offset': offset, 'limit': limit}
+    params = {
+        'uid': user_id,
+        'offset': offset,
+        'limit': limit,
+        'member_role_name': MEMBER_ROLE_NAME,
+    }
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
@@ -593,6 +650,7 @@ def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: 
                           AND rs.approved_student_user_id = %(uid)s
                           AND rs.name IS NOT NULL
                           AND rs.name <> ''
+                          AND LOWER(rs.name) <> %(member_role_name)s
                     ),
                     ARRAY[]::text[]
                 ) AS approved_role_names,
@@ -1055,6 +1113,9 @@ def api_add_topic(
         )
         tid = cur.fetchone()[0]
         enqueue_refresh(conn, 'topic', tid)
+        member_role_id = _ensure_member_role(cur, tid)
+        if member_role_id:
+            enqueue_refresh(conn, 'role', member_role_id)
         commit_with_refresh(conn)
     return {'status': 'ok', 'topic_id': tid}
 
@@ -1495,7 +1556,11 @@ def _fetch_message_context(cur, message_id: int) -> Optional[Dict[str, Any]]:
         (message_id,),
     )
     row = cur.fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    data['role_name'] = _normalize_role_name(data.get('role_name'))
+    return data
 
 
 def _notify_new_application(message: Dict[str, Any]) -> None:
@@ -1510,6 +1575,7 @@ def _notify_new_application(message: Dict[str, Any]) -> None:
     topic_label = message.get('topic_title') or f"#{message.get('topic_id')}"
     topic_label = _shorten(topic_label, 70) or f"#{message.get('topic_id')}"
     role_name = message.get('role_name')
+    role_name = _normalize_role_name(role_name)
     if role_name:
         text = f"На роль «{role_name}» новая заявка."
     else:
@@ -1532,7 +1598,7 @@ def _notify_application_update(message: Dict[str, Any], action: str) -> None:
         return
     topic_label = message.get('topic_title') or f"#{message.get('topic_id')}"
     topic_label = _shorten(topic_label, 70) or f"#{message.get('topic_id')}"
-    role_name = message.get('role_name')
+    role_name = _normalize_role_name(message.get('role_name'))
 
     def _build_result_line(result_verb: str) -> str:
         """Выполняет функцию _build_result_line."""
@@ -1652,26 +1718,30 @@ def api_messages_inbox(user_id: int = Query(...), status: Optional[str] = Query(
         if status:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, su.full_name AS sender_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       su.full_name AS sender_name
                 FROM messages m
                 JOIN users su ON su.id = m.sender_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.receiver_user_id = %s AND m.status = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id, status),
+                ''', (MEMBER_ROLE_NAME, user_id, status),
             )
         else:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, su.full_name AS sender_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       su.full_name AS sender_name
                 FROM messages m
                 JOIN users su ON su.id = m.sender_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.receiver_user_id = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id,),
+                ''', (MEMBER_ROLE_NAME, user_id),
             )
         rows = cur.fetchall()
         return [dict(r) for r in rows]
@@ -1684,26 +1754,30 @@ def api_messages_outbox(user_id: int = Query(...), status: Optional[str] = Query
         if status:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, ru.full_name AS receiver_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       ru.full_name AS receiver_name
                 FROM messages m
                 JOIN users ru ON ru.id = m.receiver_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.sender_user_id = %s AND m.status = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id, status),
+                ''', (MEMBER_ROLE_NAME, user_id, status),
             )
         else:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, ru.full_name AS receiver_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       ru.full_name AS receiver_name
                 FROM messages m
                 JOIN users ru ON ru.id = m.receiver_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.sender_user_id = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id,),
+                ''', (MEMBER_ROLE_NAME, user_id),
             )
         rows = cur.fetchall()
         return [dict(r) for r in rows]
@@ -1844,6 +1918,3 @@ def api_student_candidates(user_id: int, limit: int = Query(5, ge=1, le=50)):
         )
         rows = cur.fetchall()
         return [dict(r) for r in rows]
-
-
-

@@ -11,13 +11,36 @@ from ..services.matching_client import (
     refresh_student_embedding,
     refresh_supervisor_embedding,
     refresh_topic_embedding,
+    refresh_role_embedding,
 )
 from ..utils.topic_extraction import extract_topics_from_text, fallback_extract_topics
 
 logger = logging.getLogger(__name__)
 
+MEMBER_ROLE_NAME = '%member'
 
-                                                               
+
+def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
+    """Создаёт роль %member для темы, если она отсутствует."""
+    cur.execute(
+        'SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    row = cur.fetchone()
+    if row:
+        return None
+    cur.execute(
+        '''
+        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        RETURNING id
+        ''',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    inserted = cur.fetchone()
+    return inserted[0] if inserted else None
+
+
 def normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
     """Преобразует ввод пользователя в каноническую ссылку Telegram."""
     if not raw:
@@ -250,7 +273,11 @@ def import_students(
                     )
                     topic_row = cur.fetchone()
                     if topic_row:
-                        topic_refresh_queue.add(topic_row[0])
+                        topic_id = topic_row[0]
+                        topic_refresh_queue.add(topic_id)
+                        member_role_id = _ensure_member_role(cur, topic_id)
+                        if member_role_id:
+                            refresh_role_embedding(member_role_id)
                     inserted_topics += 1
             if needs_student_refresh:
                 student_refresh_queue.add(user_id)
@@ -400,7 +427,11 @@ def import_supervisors(
                     )
                     inserted_topic_row = cur.fetchone()
                     if inserted_topic_row:
-                        topic_refresh_queue.add(inserted_topic_row[0])
+                        topic_id = inserted_topic_row[0]
+                        topic_refresh_queue.add(topic_id)
+                        member_role_id = _ensure_member_role(cur, topic_id)
+                        if member_role_id:
+                            refresh_role_embedding(member_role_id)
                     inserted_topics += 1
 
             _insert_from_text(row.get("topics_09"), 9)
@@ -441,3 +472,4 @@ __all__ = [
     "import_students",
     "import_supervisors",
 ]
+

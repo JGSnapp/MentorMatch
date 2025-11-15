@@ -12,6 +12,29 @@ from ..context import AdminContext
 from ..embedding_queue import enqueue_refresh, commit_with_refresh
 from ..utils_common import parse_optional_int
 
+MEMBER_ROLE_NAME = '%member'
+
+
+def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
+    """Создаёт служебную роль %member для темы, если её ещё нет."""
+    cur.execute(
+        'SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    row = cur.fetchone()
+    if row:
+        return None
+    cur.execute(
+        '''
+        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        RETURNING id
+        ''',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    inserted = cur.fetchone()
+    return inserted[0] if inserted else None
+
 def register(router: APIRouter, ctx: AdminContext) -> None:
     """Подключает административные страницы управления темами и ролями."""
     templates = ctx.templates
@@ -95,6 +118,9 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 if inserted:
                     topic_id_created = inserted[0]
                     enqueue_refresh(conn, "topic", topic_id_created)
+                    member_role_id = _ensure_member_role(cur, topic_id_created)
+                    if member_role_id:
+                        enqueue_refresh(conn, 'role', member_role_id)
         notice = urllib.parse.quote('Тема добавлена')
         return RedirectResponse(url=f'/?tab=topics&msg={notice}', status_code=303)
 
