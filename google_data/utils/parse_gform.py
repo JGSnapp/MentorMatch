@@ -67,6 +67,25 @@ def _to_level_0_5(s: str) -> Optional[int]:
 
 
                                                     
+
+
+
+def _to_int_value(s: str) -> Optional[int]:
+    """Преобразует произвольную ячейку в целое число."""
+    value = (s or '').strip()
+    if not value:
+        return None
+    try:
+        return int(float(value))
+    except ValueError:
+        match = re.search(r'-?\d+', value)
+        if match:
+            try:
+                return int(match.group(0))
+            except ValueError:
+                return None
+    return None
+
 def _parse_timestamp(ts: str) -> Optional[str]:
     """Преобразует отметку времени из формы в формат ISO."""
     if not ts:
@@ -117,38 +136,44 @@ def _format_telegram_link(raw: Optional[str]) -> Optional[str]:
 HEADER_ALIASES: Dict[str, List[str]] = {
     'timestamp': ["отметка времени"],
     'email': ["адрес электронной почты", "email", "e-mail"],
-    'full_name': ["введите фио", "фио", "фамилия имя отчество"],
-    'telegram': ["введите ник telegram", "ник telegram", "telegram", "телеграм"],
-    'program': ["ваше направление", "образовательная программа"],
-    'dev_track': ["разработка трек вашего развития", "разработка - трек вашего развития"],
-    'science_track': ["наука трек вашего развития", "наука - трек вашего развития"],
-    'startup_track': ["стартап трек вашего развития", "стартап - трек вашего развития"],
-    'hard_skills_have': ["ваши hard skills знаю", "hard skills знаю"],
-    'hard_skills_want': ["hard skills хочу изучить", "хочу изучить hard skills"],
-    'interests': ["область научного профессионального интереса", "область профессионального интереса", "интересы"],
-    'workplace': ["ваше место работы", "место работы", "должность"],
-    'apply_master': ["планируете поступать в магистратуру"],
-    'achievements': ["дополнительная информация о себе", "достижения", "награды"],
-    'cv': ["загрузите файл", "cv", "резюме"],
-    'final_work_pref': ["в качестве вариативного задания я предпочитаю"],
-    'supervisor_pref': ["фио предполагаемого научного руководителя", "пожелания научного руководителя"],
-    'has_own_topic': ["есть ли у вас предполагаемая тема для вкр"],
-
-    'topic_title': ["название"],
-    'topic_description': ["описание"],
-    'topic_practical': ["практическая значимость"],
-    'groundwork': ["имеющийся задел по теме", "задел по теме"],
-    'topic_expected': ["ожидаемый результат", "ожидаемый результат по выполнении работы"],
-
-    'wants_team': ["планируете ли вы работать в команде"],
-
-    'team_role': ["желаемая роль в команде"],
-    'team_has': ["у вас уже есть в команде"],
-    'team_needs': ["кто дополнительно требуется в команду"],
-    'preferred_team_track': ["наиболее предпочтительный трек команды", "предпочтительный трек команды"],
-
-    'consent_private': ["согласие на обработку закрытых данных", "согласие закрытые", "согласие приват"],
-    'consent_personal': ["согласие на обработку персональных данных", "согласие персональные"],
+    'full_name': ["фамилия имя отчество", "фио", "введите фио"],
+    'telegram': ["telegram", "телеграм", "ник telegram"],
+    'isu_number': ["номер ису"],
+    'subdivision': ["подразделение мф тинт", "подразделение"],
+    'direction': ["ваше направление"],
+    'status': ["статус"],
+    'course': ["курс"],
+    'group_number': ["номер группы"],
+    'education_program': ["название образовательной программы", "образовательная программа"],
+    'phone': ["контактный телефон", "телефон"],
+    'dev_track': ["разработка - трек вашего развития"],
+    'science_track': ["наука - трек вашего развития"],
+    'startup_track': ["стартап - трек вашего развития"],
+    'hard_skills_have': ["hard skills (знаю)", "ваши hard skills знаю"],
+    'hard_skills_want': ["hard skills (хочу изучить)", "hard skills хочу"],
+    'interests': ["область научного", "область профессионального интереса", "интересы"],
+    'dislikes': ["чем вы точно не хотели бы заниматься"],
+    'commercial_experience': ["коммерческий опыт"],
+    'noncommercial_experience': ["некоммерческий опыт", "академический опыт"],
+    'portfolio': ["ссылка на репозиторий", "pet project"],
+    'achievements': ["информация о своих достижениях", "достижения"],
+    'hobbies': ["хобби", "внеучебные интересы"],
+    'cv': ["резюме", "cv"],
+    'customer_discovery': ["customer discovery"],
+    'sales': ["sales", "negotiation"],
+    'tech_execution': ["tech execution"],
+    'data_analytics': ["data & analytics", "data analytics"],
+    'marketing_design': ["marketing & design"],
+    'finance_business': ["finance & business"],
+    'team_leadership': ["team leadership"],
+    'apply_master': ["планируете поступать в магистратуру", "планируете поступать в аспирантуру"],
+    'hours_per_week': ["сколько вы готовы тратить времени"],
+    'thematic_choice': ["выберите тематику"],
+    'team_role': ["желаемая командная роль"],
+    'plan_for_lab': ["что планируете выполнить"],
+    'motivation_letter': ["мотивационное письмо"],
+    'police_clearance': ["справка об отсутствии судимости"],
+    'consent_personal': ["согласие на обработку персональных данных"],
 }
 
 
@@ -185,76 +210,59 @@ def _normalize_row(row: List[str], cols: Dict[str, int]) -> Dict[str, Any]:
     hard_have = _cell(row, cols.get('hard_skills_have'))
     hard_want = _cell(row, cols.get('hard_skills_want'))
     interests = _cell(row, cols.get('interests'))
-
-    topic: Dict[str, Optional[str]] = {
-        'title': _cell(row, cols.get('topic_title')) or None,
-        'description': _cell(row, cols.get('topic_description')) or None,
-        'expected_outcomes': _cell(row, cols.get('topic_expected')) or None,
-    }
-    practical = _cell(row, cols.get('topic_practical')) or None
-    if practical:
-        topic['practical_importance'] = practical
+    portfolio_raw = _cell(row, cols.get('portfolio'))
+    cv_raw = _cell(row, cols.get('cv'))
 
     telegram_link = _format_telegram_link(_cell(row, cols.get('telegram')))
-    cv_link = _extract_first_url(_cell(row, cols.get('cv')))
-
-    wants_team_raw = _cell(row, cols.get('wants_team'))
-    wants_team = _to_bool_ru(wants_team_raw)
-    apply_master = _to_bool_ru(_cell(row, cols.get('apply_master')))
-
-    has_own_topic_raw = _cell(row, cols.get('has_own_topic'))
-    has_own_topic = None
-    if has_own_topic_raw:
-        v = _simplify(has_own_topic_raw)
-        if v == 'нет':
-            has_own_topic = False
-        elif any(topic.values()):
-            has_own_topic = True
-    elif any(topic.values()):
-        has_own_topic = True
+    cv_link = _extract_first_url(cv_raw)
+    portfolio_link = _extract_first_url(portfolio_raw)
 
     dev_track = _to_level_0_5(_cell(row, cols.get('dev_track')))
     science_track = _to_level_0_5(_cell(row, cols.get('science_track')))
     startup_track = _to_level_0_5(_cell(row, cols.get('startup_track')))
-
-    consent_private = _to_bool_ru(_cell(row, cols.get('consent_private')))
-    consent_personal = _to_bool_ru(_cell(row, cols.get('consent_personal')))
 
     result: Dict[str, Any] = {
         'timestamp': _parse_timestamp(_cell(row, cols.get('timestamp'))),
         'full_name': _cell(row, cols.get('full_name')) or None,
         'email': _cell(row, cols.get('email')) or None,
         'telegram': telegram_link,
-        'program': _cell(row, cols.get('program')) or None,
-        'hard_skills_have': _split_list(hard_have) if hard_have else None,
-        'hard_skills_want': _split_list(hard_want) if hard_want else None,
-        'interests': _split_list(interests) if interests else None,
-        'achievements': _cell(row, cols.get('achievements')) or None,
-        'supervisor_preference': _cell(row, cols.get('supervisor_pref')) or None,
-        'has_own_topic': has_own_topic,
-        'topic': None,
-        'groundwork': _cell(row, cols.get('groundwork')) or None,
-        'wants_team': wants_team,
-        'team_role': _cell(row, cols.get('team_role')) or None,
-        'team_has': _cell(row, cols.get('team_has')) or None,
-        'team_needs': _cell(row, cols.get('team_needs')) or None,
-        'apply_master': apply_master,
-        'workplace': _cell(row, cols.get('workplace')) or None,
-        'preferred_team_track': _cell(row, cols.get('preferred_team_track')) or None,
+        'isu_number': _cell(row, cols.get('isu_number')) or None,
+        'subdivision': _cell(row, cols.get('subdivision')) or None,
+        'direction': _cell(row, cols.get('direction')) or None,
+        'status': _cell(row, cols.get('status')) or None,
+        'course': _to_int_value(_cell(row, cols.get('course'))),
+        'group_number': _cell(row, cols.get('group_number')) or None,
+        'education_program': _cell(row, cols.get('education_program')) or None,
+        'phone': _cell(row, cols.get('phone')) or None,
         'dev_track': dev_track,
         'science_track': science_track,
         'startup_track': startup_track,
-        'cv': cv_link or _cell(row, cols.get('cv')) or None,
-        'final_work_preference': _cell(row, cols.get('final_work_pref')) or None,
-        'consent_personal': consent_personal,
-        'consent_private': consent_private,
+        'hard_skills_have': _split_list(hard_have) if hard_have else None,
+        'hard_skills_want': _split_list(hard_want) if hard_want else None,
+        'interests': _split_list(interests) if interests else None,
+        'dislikes': _cell(row, cols.get('dislikes')) or None,
+        'commercial_experience': _cell(row, cols.get('commercial_experience')) or None,
+        'noncommercial_experience': _cell(row, cols.get('noncommercial_experience')) or None,
+        'portfolio': portfolio_link or portfolio_raw or None,
+        'achievements': _cell(row, cols.get('achievements')) or None,
+        'hobbies': _cell(row, cols.get('hobbies')) or None,
+        'cv': cv_link or cv_raw or None,
+        'customer_discovery_level': _to_level_0_5(_cell(row, cols.get('customer_discovery'))),
+        'sales_level': _to_level_0_5(_cell(row, cols.get('sales'))),
+        'tech_execution_level': _to_level_0_5(_cell(row, cols.get('tech_execution'))),
+        'data_analytics_level': _to_level_0_5(_cell(row, cols.get('data_analytics'))),
+        'marketing_design_level': _to_level_0_5(_cell(row, cols.get('marketing_design'))),
+        'finance_business_level': _to_level_0_5(_cell(row, cols.get('finance_business'))),
+        'team_leadership_level': _to_level_0_5(_cell(row, cols.get('team_leadership'))),
+        'apply_master': _to_bool_ru(_cell(row, cols.get('apply_master'))),
+        'hours_per_week': _to_int_value(_cell(row, cols.get('hours_per_week'))),
+        'thematic_choice': _cell(row, cols.get('thematic_choice')) or None,
+        'team_role': _cell(row, cols.get('team_role')) or None,
+        'plan_for_lab': _cell(row, cols.get('plan_for_lab')) or None,
+        'motivation_letter': _cell(row, cols.get('motivation_letter')) or None,
+        'police_clearance': _cell(row, cols.get('police_clearance')) or None,
+        'consent_personal': _to_bool_ru(_cell(row, cols.get('consent_personal'))),
     }
-
-    if result['wants_team'] is None and any((result.get('team_role'), result.get('team_has'), result.get('team_needs'), result.get('preferred_team_track'))):
-        result['wants_team'] = True
-
-    if any(v for k, v in topic.items() if k in ('title','description','expected_outcomes') and v):
-        result['topic'] = topic
 
     return result
 

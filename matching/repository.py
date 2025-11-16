@@ -9,6 +9,44 @@ from psycopg2.extensions import connection
 
 logger = logging.getLogger(__name__)
 
+STUDENT_PROFILE_COLUMNS_SQL = """
+        sp.isu_number,
+        sp.subdivision,
+        sp.direction,
+        sp.status,
+        sp.course,
+        sp.group_number,
+        sp.education_program,
+        sp.phone,
+        sp.dev_track,
+        sp.science_track,
+        sp.startup_track,
+        sp.interests,
+        sp.dislikes,
+        sp.skills,
+        sp.skills_to_learn,
+        sp.commercial_experience,
+        sp.noncommercial_experience,
+        sp.portfolio,
+        sp.achievements,
+        sp.hobbies,
+        sp.cv,
+        sp.customer_discovery_level,
+        sp.sales_level,
+        sp.tech_execution_level,
+        sp.data_analytics_level,
+        sp.marketing_design_level,
+        sp.finance_business_level,
+        sp.team_leadership_level,
+        sp.apply_master,
+        sp.hours_per_week,
+        sp.thematic_choice,
+        sp.team_role,
+        sp.plan_for_lab,
+        sp.motivation_letter,
+        sp.police_clearance
+    """
+
 
 def fetch_topic(conn: connection, topic_id: int) -> Optional[Dict[str, Any]]:
     """Выполняет функцию fetch_topic."""
@@ -69,7 +107,7 @@ def fetch_candidates(
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         if role == "student":
             cur.execute(
-                """
+                f"""
                 SELECT
                     u.id AS user_id,
                     u.full_name,
@@ -77,17 +115,7 @@ def fetch_candidates(
                     u.email,
                     u.created_at,
                     (u.embeddings <=> t.embeddings) AS distance,
-                    sp.program,
-                    sp.skills,
-                    sp.interests,
-                    sp.cv,
-                    sp.skills_to_learn,
-                    sp.preferred_team_track,
-                    sp.team_has AS team_role,
-                    sp.team_needs,
-                    sp.dev_track,
-                    sp.science_track,
-                    sp.startup_track
+                    {STUDENT_PROFILE_COLUMNS_SQL}
                 FROM topics t
                 JOIN users u ON LOWER(u.role) = 'student' AND u.embeddings IS NOT NULL
                 LEFT JOIN student_profiles sp ON sp.user_id = u.id
@@ -162,11 +190,9 @@ def fetch_student(conn: connection, student_user_id: int) -> Optional[Dict[str, 
     """Выполняет функцию fetch_student."""
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            """
+            f"""
             SELECT u.id AS user_id, u.full_name, u.username, u.email,
-                   sp.program, sp.skills, sp.interests, sp.cv,
-                   sp.skills_to_learn, sp.preferred_team_track, sp.team_has AS team_role, sp.team_needs,
-                   sp.dev_track, sp.science_track, sp.startup_track
+                   {STUDENT_PROFILE_COLUMNS_SQL}
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE u.id = %s AND (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)

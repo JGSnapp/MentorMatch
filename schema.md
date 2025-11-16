@@ -21,34 +21,37 @@
 
 ## student_profiles — профиль студента (1:1 к users)
 - user_id: bigint, PK, FK → users.id (ON DELETE CASCADE)
-- course: smallint
-- program: text — «Ваше направление»
-- faculty: text
-- education: text
-- skills: text — «Ваши Hard Skills (знаю)», хранится CSV
-- interests: text — «Область научного/профессионального интереса», CSV
-- cv: text — ссылка «Загрузите файл… (CV, …)»
-- requirements: text — «ФИО предполагаемого научного руководителя… / пожелания»
-- assignments: text — служебное, краткая сводка заданий (для UI)
+- submitted_at: timestamptz — отметка времени из формы
+- isu_number: text — «Номер ИСУ»
+- subdivision: text — «Подразделение МФ ТИнТ»
+- direction: text — «Ваше направление»
+- status: text — «Статус» (бакалавр/магистр и пр.)
+- course: smallint — «Курс»
+- group_number: text — «Номер группы»
+- education_program: text — «Название образовательной программы»
+- phone: text — «Контактный телефон»
+- dev_track / science_track / startup_track: smallint — оценки треков развития (0..5)
+- interests: text — «Область научного/профессионального интереса» (CSV)
+- dislikes: text — «Чем вы точно не хотели бы заниматься?»
+- skills: text — «Hard Skills (знаю)», CSV
 - skills_to_learn: text — «Hard Skills (хочу изучить)», CSV
-- achievements: text — «Дополнительная информация о себе…»
-- supervisor_pref: text — дублирует requirements (совместимость)
-- groundwork: text — «Имеющийся задел по теме» (из Блока 2)
-- wants_team: boolean — «Планируете ли вы работать в команде?»; если заполнены поля Блока 4, а ответа нет — true
-- team_role: text — «Желаемая роль в команде»
-- team_has: text — «У вас уже есть в команде:»
-- team_needs: text — «Кто дополнительно требуется в команду»
-- apply_master: boolean — «Планируете поступать в магистратуру?»
-- workplace: text — «Ваше место работы и должность…»
-- preferred_team_track: text — «Наиболее предпочтительный трек команды»
-- dev_track: smallint — «Разработка — трек вашего развития?» (0..5)
-- science_track: smallint — «Наука — трек вашего развития?» (0..5)
-- startup_track: smallint — «Стартап — трек вашего развития?» (0..5)
-- final_work_pref: text — «В качестве вариативного задания я предпочитаю»
+- commercial_experience: text — «Коммерческий опыт (компании/фриланс/ИП)»
+- noncommercial_experience: text — «Некоммерческий/академический опыт»
+- portfolio: text — ссылка на репозиторий или pet‑project
+- achievements: text — «Информация о своих достижениях»
+- hobbies: text — «Хобби и внеучебные интересы»
+- cv: text — ссылка на «Резюме (CV, .pdf)»
+- customer_discovery_level / sales_level / tech_execution_level / data_analytics_level /
+  marketing_design_level / finance_business_level / team_leadership_level: smallint — самооценки компетенций (0..5)
+- apply_master: boolean — «Планируете поступать в магистратуру / аспирантуру?»
+- hours_per_week: smallint — «Сколько времени готовы тратить (часы в неделю)»
+- thematic_choice: text — выбранные тематики лаборатории
+- team_role: text — «Желаемая командная роль»
+- plan_for_lab: text — «Что планируете выполнить за время работы…»
+- motivation_letter: text — поле «Мотивационное письмо»
+- police_clearance: text — ссылка/пометка «Справка об отсутствии судимости»
 
-Примечания:
-- skills / interests / skills_to_learn сейчас как CSV; при необходимости можно мигрировать в jsonb.
-- Поле wants_team допускает NULL при ответе «Не знаю…» и отсутствии полей Блока 4.
+Примечание: skills / interests / skills_to_learn продолжают храниться в виде CSV‑строк; при необходимости их можно мигрировать в jsonb.
 
 ## supervisor_profiles — профиль научрука (1:1 к users)
 - user_id: bigint, PK, FK → users.id (ON DELETE CASCADE)
@@ -156,36 +159,40 @@ PK: (user_id, topic_id)
 
 ## Соответствие новой Google‑формы (студенты)
 
-Блок 1:
-- «Отметка времени» → users.created_at (только для логов), парсится в `timestamp`
-- «Адрес электронной почты» → users.email
-- «Введите ФИО» → users.full_name
-- «Введите ник Telegram (в виде https://t.me/...)» → users.username (очистка до username)
-- «Ваше направление» → student_profiles.program
-- «Разработка/Наука/Стартап — трек вашего развития?» → student_profiles.dev_track / science_track / startup_track (0..5)
-- «Ваши Hard Skills (знаю)» → student_profiles.skills (CSV)
-- «Hard Skills (хочу изучить)» → student_profiles.skills_to_learn (CSV)
-- «Область научного/профессионального интереса» → student_profiles.interests (CSV)
-- «Ваше место работы и должность…» → student_profiles.workplace
-- «Планируете поступать в магистратуру?» → student_profiles.apply_master (bool)
-- «Дополнительная информация о себе…» → student_profiles.achievements
-- «Загрузите файл… (CV, …)» → student_profiles.cv (первая ссылка)
-- «В качестве вариативного задания…» → student_profiles.final_work_pref
-- «ФИО предполагаемого научного руководителя… / пожелания» → student_profiles.supervisor_pref (и requirements)
-- «Есть ли у вас предполагаемая тема для ВКР?» → флаг has_own_topic; если не «нет» и заполнен Блок 2 — создаём тему
+Все поля идут в порядке таблицы анкеты 2025/2026 и автоматически раскладываются по колонкам:
 
-Блок 2 (если ответ не «нет»):
-- «Название» → topics.title
-- «Описание» → topics.description
-- «Практическая значимость» → добавляется в конец description
-- «Имеющийся задел по теме» → добавляется в конец description и дублируется в student_profiles.groundwork
-- «Ожидаемый результат…» → topics.expected_outcomes
+- «Отметка времени» → users.created_at (используется и для student_profiles.submitted_at). Парсится в ISO 8601.
+- «Фамилия Имя Отчество» → users.full_name.
+- «Номер ИСУ» → student_profiles.isu_number.
+- «Подразделение МФ ТИнТ» → student_profiles.subdivision.
+- «Ваше направление» → student_profiles.direction.
+- «Статус» → student_profiles.status.
+- «Курс» → student_profiles.course (целое число).
+- «Номер группы» → student_profiles.group_number.
+- «Название образовательной программы» → student_profiles.education_program.
+- «E-mail» → users.email.
+- «Telegram» → users.username (нормализуем до https://t.me/<username>).
+- «Контактный телефон» → student_profiles.phone.
+- «Разработка / Наука / Стартап — трек вашего развития?» → student_profiles.dev_track / science_track / startup_track (0..5).
+- «Область научного/профессионального интереса» → student_profiles.interests (CSV).
+- «Чем вы точно не хотели бы заниматься?» → student_profiles.dislikes.
+- «Hard Skills (знаю)» → student_profiles.skills (CSV).
+- «Hard Skills (хочу изучить)» → student_profiles.skills_to_learn (CSV).
+- «Коммерческий опыт (компании/фриланс/ИП)» → student_profiles.commercial_experience.
+- «Некоммерческий/академический опыт (лаборатории/НИИ/open-source)» → student_profiles.noncommercial_experience.
+- «Ссылка на репозиторий (GitHub/GitLab и др.) или на pet project» → student_profiles.portfolio (берём первую ссылку).
+- «Информация о своих достижениях (участие в хакатонах/конкурсах…)» → student_profiles.achievements.
+- «Хобби и внеучебные интересы» → student_profiles.hobbies.
+- «Резюме (CV, в формате .pdf)» → student_profiles.cv (через media_store, если это HTTP-ссылка).
+- Блок самооценок «Насколько разбираешься в теме …» → customer_discovery_level, sales_level, tech_execution_level, data_analytics_level, marketing_design_level, finance_business_level, team_leadership_level (значения 0..5).
+- «Планируете поступать в магистратуру / аспирантуру?» → student_profiles.apply_master (bool).
+- «Сколько вы готовы тратить времени (часы в неделю)…» → student_profiles.hours_per_week.
+- «Выберите тематику» → student_profiles.thematic_choice.
+- «Желаемая командная роль» → student_profiles.team_role.
+- «Что планируете выполнить за время работы в лаборатории LISA?» → student_profiles.plan_for_lab.
+- «Мотивационное письмо» → student_profiles.motivation_letter.
+- «Справка об отсутствии судимости» → student_profiles.police_clearance (ссылка/пометка).
+- «Согласие на обработку персональных данных» → users.consent_personal.
 
-Блок 3 (обязательный):
-- «Планируете ли вы работать в команде?» → student_profiles.wants_team (да/нет/NULL)
+Если в форме появятся дополнительные вопросы, их можно безопасно игнорировать — автоматическое создание тем из анкеты отключено.
 
-Блок 4 (если Блок 3 не «нет»):
-- «Желаемая роль в команде» → student_profiles.team_role
-- «У вас уже есть в команде:» → student_profiles.team_has
-- «Кто дополнительно требуется в команду» → student_profiles.team_needs
-- «Выберите наиболее предпочтительный трек команды» → student_profiles.preferred_team_track

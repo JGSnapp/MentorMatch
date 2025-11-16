@@ -30,6 +30,25 @@ def normalize_optional_str(value: Optional[Any]) -> Optional[str]:
     return stripped or None
 
 
+def parse_optional_bool(value: Optional[Any]) -> Optional[bool]:
+    """Преобразует произвольный ввод в булево значение."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    truthy = {'1', 'true', 't', 'yes', 'y', 'да', 'ok', 'on', 'истина'}
+    falsy = {'0', 'false', 'f', 'no', 'n', 'нет', 'off'}
+    if lowered in truthy:
+        return True
+    if lowered in falsy:
+        return False
+    return None
+
+
 def resolve_service_account_path(path: Optional[str]) -> Optional[str]:
     """Ищет путь к файлу сервисного аккаунта и возвращает абсолютный путь."""
     if not path:

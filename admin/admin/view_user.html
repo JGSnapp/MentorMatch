@@ -24,10 +24,34 @@
   {% if student %}
     <section class="surface stack">
       <h3 class="section-title">Студент</h3>
-      <div class="muted">Программа: {{ student.program or '—' }}</div>
-      <div class="muted">Навыки: {{ student.skills or '—' }}</div>
+      <div class="muted">Направление: {{ student.direction or '—' }}</div>
+      <div class="muted">Образовательная программа: {{ student.education_program or '—' }}</div>
+      <div class="muted">Статус / курс / группа: {{ student.status or '—' }} / {{ student.course or '—' }} / {{ student.group_number or '—' }}</div>
+      <div class="muted">Телефон: {{ student.phone or '—' }}</div>
+      <div class="muted">Hard Skills: {{ student.skills or '—' }}</div>
+      <div class="muted">Hard Skills (хочу изучить): {{ student.skills_to_learn or '—' }}</div>
       <div class="muted">Интересы: {{ student.interests or '—' }}</div>
+      <div class="muted">Не хочет заниматься: {{ student.dislikes or '—' }}</div>
+      <div class="muted">Коммерческий опыт: {{ student.commercial_experience or '—' }}</div>
+      <div class="muted">Некоммерческий опыт: {{ student.noncommercial_experience or '—' }}</div>
+      <div class="muted">Портфолио: {% if student.portfolio %}<a href="{{ student.portfolio }}" target="_blank">{{ student.portfolio }}</a>{% else %}—{% endif %}</div>
+      <div class="muted">Часы на проект / роль: {{ student.hours_per_week or '—' }} / {{ student.team_role or '—' }}</div>
+      <div class="muted">Тематики: {{ student.thematic_choice or '—' }}</div>
+      <div class="muted">Достижения: {{ student.achievements or '—' }}</div>
+      <div class="muted">Хобби: {{ student.hobbies or '—' }}</div>
       <div class="muted">CV: {% if student.cv %}<a href="{{ student.cv }}" target="_blank">Ссылка</a>{% else %}—{% endif %}</div>
+      {% if student.plan_for_lab %}
+        <details>
+          <summary class="muted" style="cursor:pointer;">Цели в лаборатории</summary>
+          <p>{{ student.plan_for_lab }}</p>
+        </details>
+      {% endif %}
+      {% if student.motivation_letter %}
+        <details>
+          <summary class="muted" style="cursor:pointer;">Мотивационное письмо</summary>
+          <p>{{ student.motivation_letter }}</p>
+        </details>
+      {% endif %}
     </section>
   {% endif %}
 

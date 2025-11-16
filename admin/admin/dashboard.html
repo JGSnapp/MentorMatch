@@ -129,8 +129,9 @@
               <th>Имя</th>
               <th>Email</th>
               <th>Telegram</th>
-              <th>Программа</th>
+              <th>Направление</th>
               <th>Навыки</th>
+              <th>Часы / роль</th>
               <th></th>
             </tr>
           </thead>
@@ -141,8 +142,9 @@
                 <td>{{ student.full_name }}</td>
                 <td>{{ student.email or '—' }}</td>
                 <td>{{ student.username or '—' }}</td>
-                <td>{{ student.program or '—' }}</td>
+                <td>{{ student.direction or student.education_program or '—' }}</td>
                 <td>{{ student.skills or '—' }}</td>
+                <td>{{ student.hours_per_week or '—' }} / {{ student.team_role or '—' }}</td>
                 <td><a href="/edit-user/{{ student.id }}">✏️</a></td>
               </tr>
             {% else %}

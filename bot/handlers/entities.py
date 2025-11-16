@@ -12,11 +12,67 @@ MEMBER_ROLE_NAME = '%member'
 
 
 class EntityHandlers(BaseHandlers):
+    STUDENT_EDIT_SEQUENCE = [
+        ('isu_number', 'Номер ИСУ'),
+        ('subdivision', 'Подразделение МФ/школа'),
+        ('direction', 'Направление обучения'),
+        ('status', 'Статус обучения (бакалавр, магистр и т.д.)'),
+        ('course', 'Курс (числом)'),
+        ('group_number', 'Номер группы'),
+        ('education_program', 'Название образовательной программы'),
+        ('phone', 'Контактный телефон'),
+        ('dev_track', 'Разработка — трек развития (0-5)'),
+        ('science_track', 'Наука — трек развития (0-5)'),
+        ('startup_track', 'Стартап — трек развития (0-5)'),
+        ('interests', 'Область научного/профессионального интереса'),
+        ('dislikes', 'Чем вы точно не хотели бы заниматься'),
+        ('skills', 'Hard skills (знаю)'),
+        ('skills_to_learn', 'Hard skills (хочу изучить)'),
+        ('commercial_experience', 'Коммерческий опыт (компании/фриланс)'),
+        ('noncommercial_experience', 'Некоммерческий/академический опыт'),
+        ('portfolio', 'Ссылка на репозиторий / pet project'),
+        ('achievements', 'Информация о достижениях'),
+        ('hobbies', 'Хобби и внеучебные интересы'),
+        ('cv', 'Ссылка на резюме (PDF)'),
+        ('customer_discovery_level', 'Customer discovery (оцените 0-5)'),
+        ('sales_level', 'Sales & Negotiation (оцените 0-5)'),
+        ('tech_execution_level', 'Tech execution (оцените 0-5)'),
+        ('data_analytics_level', 'Data & Analytics (оцените 0-5)'),
+        ('marketing_design_level', 'Marketing & Design (оцените 0-5)'),
+        ('finance_business_level', 'Finance & Business (оцените 0-5)'),
+        ('team_leadership_level', 'Team leadership (оцените 0-5)'),
+        ('apply_master', 'Планируете поступать в магистратуру/аспирантуру? (да/нет)'),
+        ('hours_per_week', 'Сколько времени готовы уделять проекту (часы в неделю)'),
+        ('thematic_choice', 'Интересующие тематики/направления'),
+        ('team_role', 'Желаемая командная роль'),
+        ('plan_for_lab', 'Что планируете выполнить в лаборатории LISA'),
+        ('motivation_letter', 'Мотивационное письмо'),
+        ('police_clearance', 'Справка об отсутствии судимости (ссылка)'),
+    ]
+
     @staticmethod
     def _is_member_role(role: Dict[str, Any]) -> bool:
         """Определяет, является ли роль служебной ролью %member."""
         name = (role.get('name') or '').strip().lower()
         return bool(name) and name == MEMBER_ROLE_NAME
+
+    async def _prompt_student_field(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, target_message=None) -> None:
+        """Запрашивает следующее поле профиля студента."""
+        message = target_message or update.effective_message
+        idx = context.user_data.get('edit_student_index', 0) or 0
+        if idx >= len(self.STUDENT_EDIT_SEQUENCE):
+            await self._finish_edit_student(update, context)
+            return
+        key, label = self.STUDENT_EDIT_SEQUENCE[idx]
+        original = context.user_data.get('edit_student_original') or {}
+        current = (original.get(key) or '–') if isinstance(original, dict) else '–'
+        prompt = (
+            f"{label}.\n"
+            f"Сейчас: {current}.\n"
+            "Напишите новое значение, «пропустить» чтобы оставить без изменений или «-» чтобы очистить."
+        )
+        if message:
+            await message.reply_text(self._fix_text(prompt))
 
     async def cb_student_me(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_student_me."""
@@ -160,17 +216,73 @@ class EntityHandlers(BaseHandlers):
         is_self = self._ids_equal(viewer_id, sid)
         can_edit = is_admin or is_self
                 
+        def _short(value: Optional[str], limit: int = 200) -> str:
+            text = (value or '').strip()
+            if not text:
+                return '–'
+            return text if len(text) <= limit else text[: limit - 1] + '…'
+
+        def _fmt_level(value: Optional[Any]) -> str:
+            if value in (None, ''):
+                return '–'
+            return str(value)
+
+        def _fmt_bool(value: Optional[Any]) -> str:
+            if value is True:
+                return 'Да'
+            if value is False:
+                return 'Нет'
+            return '–'
+
         lines = [
             f"Студент: {s.get('full_name','–')}",
             f"Username: {s.get('username') or '–'}",
             f"Email: {s.get('email') or '–'}",
-            f"Направление: {s.get('program') or '–'}",
-            f"Навыки: {s.get('skills') or '–'}",
-            f"Интересы: {s.get('interests') or '–'}",
+            f"Номер ИСУ: {s.get('isu_number') or '–'}",
+            f"Подразделение: {s.get('subdivision') or '–'}",
+            f"Направление: {s.get('direction') or '–'}",
+            f"Статус/курс/группа: {s.get('status') or '–'} / {s.get('course') or '–'} / {s.get('group_number') or '–'}",
+            f"Образовательная программа: {s.get('education_program') or '–'}",
+            f"Телефон: {s.get('phone') or '–'}",
+            (
+                "Треки развития (0-5): разработка {dev}, наука {science}, стартап {startup}"
+            ).format(
+                dev=_fmt_level(s.get('dev_track')),
+                science=_fmt_level(s.get('science_track')),
+                startup=_fmt_level(s.get('startup_track')),
+            ),
+            f"Hard skills (знаю): {s.get('skills') or '–'}",
+            f"Hard skills (хочу изучить): {s.get('skills_to_learn') or '–'}",
+            f"Область интересов: {_short(s.get('interests'))}",
+            f"Чем заниматься не хотите: {_short(s.get('dislikes'))}",
+            f"Коммерческий опыт: {_short(s.get('commercial_experience'))}",
+            f"Некоммерческий/академический опыт: {_short(s.get('noncommercial_experience'))}",
+            f"Портфолио / репозиторий: {s.get('portfolio') or '–'}",
+            f"Достижения: {_short(s.get('achievements'))}",
+            f"Хобби: {_short(s.get('hobbies'))}",
+            (
+                "Навыки (0-5): CustDev {cust}, Sales {sales}, Tech {tech}, Data {data}, "
+                "Marketing {mkt}, Finance {fin}, Leadership {lead}"
+            ).format(
+                cust=_fmt_level(s.get('customer_discovery_level')),
+                sales=_fmt_level(s.get('sales_level')),
+                tech=_fmt_level(s.get('tech_execution_level')),
+                data=_fmt_level(s.get('data_analytics_level')),
+                mkt=_fmt_level(s.get('marketing_design_level')),
+                fin=_fmt_level(s.get('finance_business_level')),
+                lead=_fmt_level(s.get('team_leadership_level')),
+            ),
+            f"Планирует магистратуру/аспирантуру: {_fmt_bool(s.get('apply_master'))}",
+            f"Часы на проект: {s.get('hours_per_week') or '–'}",
+            f"Желаемая роль: {s.get('team_role') or '–'}",
+            f"Тематики: {_short(s.get('thematic_choice'))}",
+            f"План в лаборатории: {_short(s.get('plan_for_lab'))}",
+            f"Мотивационное письмо: {_short(s.get('motivation_letter'))}",
+            f"Справка об отсутствии судимости: {s.get('police_clearance') or '–'}",
             f"CV: {(s.get('cv') or '–')[:200]}",
             f"ID: {s.get('id')}",
         ]
-                                          
+
         rec = await self._api_get(f'/api/user-candidates/{sid}?limit=5') or []
         if rec:
             lines.append('')
@@ -217,15 +329,11 @@ class EntityHandlers(BaseHandlers):
         if not student:
             await q.edit_message_text(self._fix_text('Профиль студента не найден.'))
             return
-        context.user_data['awaiting'] = 'edit_student_program'
+        context.user_data['awaiting'] = 'edit_student_field'
         context.user_data['edit_student_payload'] = {'user_id': sid}
         context.user_data['edit_student_original'] = student
-        prompt = (
-            f"Редактирование профиля студента.\n"
-            f"Текущая программа: {student.get('program') or '–'}.\n"
-            "Введите новое значение. Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
-        )
-        await q.message.reply_text(self._fix_text(prompt))
+        context.user_data['edit_student_index'] = 0
+        await self._prompt_student_field(update, context, target_message=q.message)
 
     async def cb_view_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_view_supervisor."""
@@ -1559,54 +1667,20 @@ class EntityHandlers(BaseHandlers):
             await update.message.reply_text(self._fix_text(msg), reply_markup=self._mk(kb))
             return
 
-        if awaiting == 'edit_student_program':
+        if awaiting == 'edit_student_field':
             payload = context.user_data.get('edit_student_payload') or {}
+            idx = context.user_data.get('edit_student_index', 0) or 0
+            sequence = self.STUDENT_EDIT_SEQUENCE
+            if idx >= len(sequence):
+                context.user_data['awaiting'] = None
+                await self._finish_edit_student(update, context)
+                return
+            key, _ = sequence[idx]
             value = self._normalize_edit_input(text)
-            payload['program'] = value
+            payload[key] = value
             context.user_data['edit_student_payload'] = payload
-            context.user_data['awaiting'] = 'edit_student_skills'
-            original = context.user_data.get('edit_student_original') or {}
-            prompt = (
-                f"Навыки (сейчас: {original.get('skills') or '–'}).\n"
-                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
-            )
-            await update.message.reply_text(self._fix_text(prompt))
-            return
-
-        if awaiting == 'edit_student_skills':
-            payload = context.user_data.get('edit_student_payload') or {}
-            value = self._normalize_edit_input(text)
-            payload['skills'] = value
-            context.user_data['edit_student_payload'] = payload
-            context.user_data['awaiting'] = 'edit_student_interests'
-            original = context.user_data.get('edit_student_original') or {}
-            prompt = (
-                f"Интересы (сейчас: {original.get('interests') or '–'}).\n"
-                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
-            )
-            await update.message.reply_text(self._fix_text(prompt))
-            return
-
-        if awaiting == 'edit_student_interests':
-            payload = context.user_data.get('edit_student_payload') or {}
-            value = self._normalize_edit_input(text)
-            payload['interests'] = value
-            context.user_data['edit_student_payload'] = payload
-            context.user_data['awaiting'] = 'edit_student_cv'
-            original = context.user_data.get('edit_student_original') or {}
-            prompt = (
-                f"Ссылка на CV (сейчас: {(original.get('cv') or '–')[:200]}).\n"
-                "Напишите «пропустить», чтобы оставить без изменений, или «-»/«очистить», чтобы удалить."
-            )
-            await update.message.reply_text(self._fix_text(prompt))
-            return
-
-        if awaiting == 'edit_student_cv':
-            payload = context.user_data.get('edit_student_payload') or {}
-            value = self._normalize_edit_input(text)
-            payload['cv'] = value
-            context.user_data['edit_student_payload'] = payload
-            await self._finish_edit_student(update, context)
+            context.user_data['edit_student_index'] = idx + 1
+            await self._prompt_student_field(update, context)
             return
 
         if awaiting == 'edit_supervisor_position':
@@ -1877,18 +1951,17 @@ class EntityHandlers(BaseHandlers):
             context.user_data['awaiting'] = None
             return
         data: Dict[str, Any] = {'user_id': str(user_id)}
-        for key in ('program', 'skills', 'interests', 'cv'):
-            value = payload.get(key, self.EDIT_KEEP)
+        for key, value in payload.items():
+            if key == 'user_id':
+                continue
             if value == self.EDIT_KEEP:
                 continue
-            if value is None:
-                data[key] = ''
-            else:
-                data[key] = value
+            data[key] = '' if value is None else value
         res = await self._api_post('/api/update-student-profile', data=data)
         context.user_data['awaiting'] = None
         context.user_data.pop('edit_student_payload', None)
         context.user_data.pop('edit_student_original', None)
+        context.user_data.pop('edit_student_index', None)
         if not res or res.get('status') != 'ok':
             await update.message.reply_text(self._fix_text('Не удалось обновить профиль студента. Попробуйте позже.'))
             return

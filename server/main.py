@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib import request as urllib_request
 from urllib import error as urllib_error
 
-from fastapi import FastAPI, Form, Query, HTTPException
+from fastapi import FastAPI, Form, Query, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 import psycopg2
 import psycopg2.extras
@@ -14,7 +14,12 @@ from dotenv import load_dotenv
 from clients.google_data_client import sync_roles_sheet as trigger_roles_sheet_sync
 from embedding_queue import commit_with_refresh, enqueue_refresh
 from media_store import MEDIA_ROOT
-from utils import parse_optional_int, normalize_optional_str, resolve_service_account_path
+from utils import (
+    parse_optional_int,
+    normalize_optional_str,
+    resolve_service_account_path,
+    parse_optional_bool,
+)
 
 from matching_router import create_matching_router
 from services.topic_import import (
@@ -43,6 +48,47 @@ logger = logging.getLogger(__name__)
 logger.setLevel(LOG_LEVEL)
 
 MEMBER_ROLE_NAME = '%member'
+
+STUDENT_PROFILE_TEXT_FIELDS = (
+    'isu_number',
+    'subdivision',
+    'direction',
+    'status',
+    'group_number',
+    'education_program',
+    'phone',
+    'interests',
+    'dislikes',
+    'skills',
+    'skills_to_learn',
+    'commercial_experience',
+    'noncommercial_experience',
+    'portfolio',
+    'achievements',
+    'hobbies',
+    'thematic_choice',
+    'team_role',
+    'plan_for_lab',
+    'motivation_letter',
+    'police_clearance',
+)
+
+STUDENT_PROFILE_INT_FIELDS = (
+    'course',
+    'dev_track',
+    'science_track',
+    'startup_track',
+    'customer_discovery_level',
+    'sales_level',
+    'tech_execution_level',
+    'data_analytics_level',
+    'marketing_design_level',
+    'finance_business_level',
+    'team_leadership_level',
+    'hours_per_week',
+)
+
+STUDENT_PROFILE_BOOL_FIELDS = ('apply_master',)
 
 
 def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
@@ -581,7 +627,7 @@ def api_get_students(limit: int = Query(10, ge=1, le=100), offset: int = Query(0
         cur.execute(
             '''
             SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                   sp.program, sp.skills, sp.interests, sp.cv
+                   sp.*
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE u.role = 'student'
@@ -600,7 +646,7 @@ def api_get_student(student_id: int):
         cur.execute(
             '''
             SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                   sp.program, sp.skills, sp.interests, sp.cv
+                   sp.*
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE u.role = 'student' AND u.id = %s
@@ -906,99 +952,50 @@ def api_self_register(
 
 
 @app.post('/api/update-student-profile', response_class=JSONResponse)
-def api_update_student_profile(
-    user_id: int = Form(...),
-    program: Optional[str] = Form(None),
-    skills: Optional[str] = Form(None),
-    interests: Optional[str] = Form(None),
-    cv: Optional[str] = Form(None),
-    skills_to_learn: Optional[str] = Form(None),
-    achievements: Optional[str] = Form(None),
-    workplace: Optional[str] = Form(None),
-):
-    """Выполняет функцию api_update_student_profile."""
-    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            '''
-            SELECT program, skills, interests, cv, skills_to_learn, achievements, workplace
-            FROM student_profiles
-            WHERE user_id=%s
-            ''',
-            (user_id,),
-        )
-        existing = cur.fetchone()
-        program_val = (
-            normalize_optional_str(program)
-            if program is not None
-            else (existing.get('program') if existing else None)
-        )
-        skills_val = (
-            normalize_optional_str(skills)
-            if skills is not None
-            else (existing.get('skills') if existing else None)
-        )
-        interests_val = (
-            normalize_optional_str(interests)
-            if interests is not None
-            else (existing.get('interests') if existing else None)
-        )
-        if cv is None:
-            cv_val = existing.get('cv') if existing else None
-        else:
-            cv_val = process_cv(conn, user_id, normalize_optional_str(cv))
-        skills_to_learn_val = (
-            normalize_optional_str(skills_to_learn)
-            if skills_to_learn is not None
-            else (existing.get('skills_to_learn') if existing else None)
-        )
-        achievements_val = (
-            normalize_optional_str(achievements)
-            if achievements is not None
-            else (existing.get('achievements') if existing else None)
-        )
-        workplace_val = (
-            normalize_optional_str(workplace)
-            if workplace is not None
-            else (existing.get('workplace') if existing else None)
-        )
+async def api_update_student_profile(request: Request):
+    """Обновляет расширенный профиль студента."""
+    form = await request.form()
+    user_id = parse_optional_int(form.get('user_id'))
+    if user_id is None:
+        raise HTTPException(status_code=400, detail='user_id is required')
 
-        if existing:
+    text_fields = set(STUDENT_PROFILE_TEXT_FIELDS)
+    int_fields = set(STUDENT_PROFILE_INT_FIELDS)
+    bool_fields = set(STUDENT_PROFILE_BOOL_FIELDS)
+
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
+        exists = cur.fetchone() is not None
+        updates: Dict[str, Any] = {}
+
+        for field in text_fields:
+            if field in form:
+                updates[field] = normalize_optional_str(form.get(field))
+        for field in int_fields:
+            if field in form:
+                updates[field] = parse_optional_int(form.get(field))
+        for field in bool_fields:
+            if field in form:
+                updates[field] = parse_optional_bool(form.get(field))
+        if 'cv' in form:
+            updates['cv'] = process_cv(conn, user_id, normalize_optional_str(form.get('cv')))
+
+        if not exists:
             cur.execute(
-                '''
-                UPDATE student_profiles
-                SET program=%s, skills=%s, interests=%s, cv=%s, skills_to_learn=%s, achievements=%s, workplace=%s
-                WHERE user_id=%s
-                ''',
-                (
-                    program_val,
-                    skills_val,
-                    interests_val,
-                    cv_val,
-                    skills_to_learn_val,
-                    achievements_val,
-                    workplace_val,
-                    user_id,
-                ),
+                'INSERT INTO student_profiles(user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING',
+                (user_id,),
             )
+
+        if updates:
+            assignments = ', '.join(f"{col}=%s" for col in updates.keys())
+            cur.execute(
+                f'UPDATE student_profiles SET {assignments} WHERE user_id=%s',
+                (*updates.values(), user_id),
+            )
+            enqueue_refresh(conn, 'student', user_id)
+            commit_with_refresh(conn)
         else:
-            cur.execute(
-                '''
-                INSERT INTO student_profiles(user_id, program, skills, interests, cv, skills_to_learn, achievements, workplace)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ''',
-                (
-                    user_id,
-                    program_val,
-                    skills_val,
-                    interests_val,
-                    cv_val,
-                    skills_to_learn_val,
-                    achievements_val,
-                    workplace_val,
-                ),
-            )
-        enqueue_refresh(conn, 'student', user_id)
-        commit_with_refresh(conn)
+            conn.commit()
     return {'status': 'ok'}
 
 
@@ -1324,7 +1321,7 @@ def latest(kind: str = Query('topics', enum=['students', 'supervisors', 'topics'
             cur.execute(
                 '''
                 SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                       sp.program, sp.skills, sp.interests
+                       sp.*
                 FROM users u
                 LEFT JOIN student_profiles sp ON sp.user_id = u.id
                 WHERE u.role = 'student'

@@ -9,8 +9,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..context import AdminContext
 from ..embedding_queue import enqueue_refresh, commit_with_refresh
-from ..utils import normalize_telegram_link
-from ..utils_common import parse_optional_int
+from ..utils import normalize_telegram_link, process_cv
+from ..utils_common import parse_optional_int, normalize_optional_str
 
 
 def register(router: APIRouter, ctx: AdminContext) -> None:
@@ -37,10 +37,27 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         full_name: str = Form(...),
         email: Optional[str] = Form(None),
         username: Optional[str] = Form(None),
-        program: Optional[str] = Form(None),
+        direction: Optional[str] = Form(None),
+        education_program: Optional[str] = Form(None),
+        status_value: Optional[str] = Form(None),
+        course: Optional[str] = Form(None),
+        group_number: Optional[str] = Form(None),
+        phone: Optional[str] = Form(None),
         skills: Optional[str] = Form(None),
+        skills_to_learn: Optional[str] = Form(None),
         interests: Optional[str] = Form(None),
+        dislikes: Optional[str] = Form(None),
+        commercial_experience: Optional[str] = Form(None),
+        noncommercial_experience: Optional[str] = Form(None),
+        portfolio: Optional[str] = Form(None),
+        achievements: Optional[str] = Form(None),
+        hobbies: Optional[str] = Form(None),
         cv: Optional[str] = Form(None),
+        hours_per_week: Optional[str] = Form(None),
+        team_role: Optional[str] = Form(None),
+        plan_for_lab: Optional[str] = Form(None),
+        motivation_letter: Optional[str] = Form(None),
+        thematic_choice: Optional[str] = Form(None),
     ):
         """Создаёт студента и его профиль на основе данных формы."""
         full_name = (full_name or '').strip()
@@ -48,6 +65,27 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
             notice = urllib.parse.quote('Укажите имя студента')
             return RedirectResponse(url=f'/add-student?msg={notice}', status_code=303)
         username_normalized = normalize_telegram_link(username)
+        course_val = parse_optional_int(course)
+        hours_val = parse_optional_int(hours_per_week)
+        direction_val = normalize_optional_str(direction)
+        education_program_val = normalize_optional_str(education_program)
+        status_val = normalize_optional_str(status_value)
+        group_val = normalize_optional_str(group_number)
+        phone_val = normalize_optional_str(phone)
+        skills_val = normalize_optional_str(skills)
+        skills_to_learn_val = normalize_optional_str(skills_to_learn)
+        interests_val = normalize_optional_str(interests)
+        dislikes_val = normalize_optional_str(dislikes)
+        commercial_val = normalize_optional_str(commercial_experience)
+        noncommercial_val = normalize_optional_str(noncommercial_experience)
+        portfolio_val = normalize_optional_str(portfolio)
+        achievements_val = normalize_optional_str(achievements)
+        hobbies_val = normalize_optional_str(hobbies)
+        team_role_val = normalize_optional_str(team_role)
+        plan_val = normalize_optional_str(plan_for_lab)
+        motivation_val = normalize_optional_str(motivation_letter)
+        thematic_val = normalize_optional_str(thematic_choice)
+
         with ctx.get_conn() as conn, conn.cursor() as cur:
             cur.execute(
                 '''
@@ -58,17 +96,69 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 (full_name, email, username_normalized),
             )
             user_id = cur.fetchone()[0]
+            cv_val = process_cv(conn, user_id, normalize_optional_str(cv))
             cur.execute(
                 '''
-                INSERT INTO student_profiles(user_id, program, skills, interests, cv)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO student_profiles(
+                    user_id, direction, education_program, status, course, group_number,
+                    phone, skills, skills_to_learn, interests, dislikes,
+                    commercial_experience, noncommercial_experience, portfolio,
+                    achievements, hobbies, cv, hours_per_week, team_role,
+                    plan_for_lab, motivation_letter, thematic_choice
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s
+                )
                 ON CONFLICT (user_id) DO UPDATE SET
-                    program = EXCLUDED.program,
+                    direction = EXCLUDED.direction,
+                    education_program = EXCLUDED.education_program,
+                    status = EXCLUDED.status,
+                    course = EXCLUDED.course,
+                    group_number = EXCLUDED.group_number,
+                    phone = EXCLUDED.phone,
                     skills = EXCLUDED.skills,
+                    skills_to_learn = EXCLUDED.skills_to_learn,
                     interests = EXCLUDED.interests,
-                    cv = EXCLUDED.cv
+                    dislikes = EXCLUDED.dislikes,
+                    commercial_experience = EXCLUDED.commercial_experience,
+                    noncommercial_experience = EXCLUDED.noncommercial_experience,
+                    portfolio = EXCLUDED.portfolio,
+                    achievements = EXCLUDED.achievements,
+                    hobbies = EXCLUDED.hobbies,
+                    cv = EXCLUDED.cv,
+                    hours_per_week = EXCLUDED.hours_per_week,
+                    team_role = EXCLUDED.team_role,
+                    plan_for_lab = EXCLUDED.plan_for_lab,
+                    motivation_letter = EXCLUDED.motivation_letter,
+                    thematic_choice = EXCLUDED.thematic_choice
                 ''',
-                (user_id, program, skills, interests, cv),
+                (
+                    user_id,
+                    direction_val,
+                    education_program_val,
+                    status_val,
+                    course_val,
+                    group_val,
+                    phone_val,
+                    skills_val,
+                    skills_to_learn_val,
+                    interests_val,
+                    dislikes_val,
+                    commercial_val,
+                    noncommercial_val,
+                    portfolio_val,
+                    achievements_val,
+                    hobbies_val,
+                    cv_val,
+                    hours_val,
+                    team_role_val,
+                    plan_val,
+                    motivation_val,
+                    thematic_val,
+                ),
             )
             enqueue_refresh(conn, "student", user_id)
         commit_with_refresh(conn)
