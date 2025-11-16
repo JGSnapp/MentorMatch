@@ -421,21 +421,12 @@ class EntityHandlers(BaseHandlers):
         author_name = (role.get('author') or '–').strip() or '–'
         description = (role.get('description') or '–').strip()
         required_skills = (role.get('required_skills') or '–').strip() or '–'
-        capacity = role.get('capacity')
-        capacity_display = '–'
-        if capacity not in (None, ''):
-            try:
-                capacity_display = str(int(capacity))
-            except Exception:
-                capacity_display = str(capacity)
-
         lines: List[str] = [
             f'Роль: {role_name}',
             f'Тема: {topic_title}',
             f'Автор темы: {author_name}',
             f'Описание: {(description or "–")[:500] or "–"}',
             f'Навыки: {required_skills}',
-            f'Вместимость: {capacity_display}',
             f'ID роли: {rid}',
         ]
 
@@ -1532,28 +1523,6 @@ class EntityHandlers(BaseHandlers):
             payload = context.user_data.get('add_role_payload') or {}
             payload['required_skills'] = None if self._should_skip_optional(text) else text
             context.user_data['add_role_payload'] = payload
-            context.user_data['awaiting'] = 'add_role_capacity'
-            await update.message.reply_text(
-                self._fix_text('Укажите вместимость роли числом (или "-" чтобы пропустить).')
-            )
-            return
-
-        if awaiting == 'add_role_capacity':
-            payload = context.user_data.get('add_role_payload') or {}
-            if self._should_skip_optional(text):
-                capacity_val: Optional[int] = None
-            else:
-                try:
-                    capacity_val = int(text)
-                    if capacity_val < 0:
-                        raise ValueError('negative capacity')
-                except Exception:
-                    await update.message.reply_text(
-                        self._fix_text('Вместимость должна быть числом. Введите число или "-" чтобы пропустить.')
-                    )
-                    return
-            payload['capacity'] = capacity_val
-            context.user_data['add_role_payload'] = payload
             topic_id = context.user_data.get('add_role_topic_id')
             topic_title = context.user_data.get('add_role_topic_title')
             if not topic_id or not payload.get('name'):
@@ -1573,8 +1542,6 @@ class EntityHandlers(BaseHandlers):
                 data['description'] = payload['description']
             if payload.get('required_skills'):
                 data['required_skills'] = payload['required_skills']
-            if payload.get('capacity') is not None:
-                data['capacity'] = str(payload['capacity'])
             res = await self._api_post('/api/add-role', data=data)
             context.user_data['awaiting'] = None
             context.user_data.pop('add_role_payload', None)
@@ -1850,28 +1817,6 @@ class EntityHandlers(BaseHandlers):
             value = self._normalize_edit_input(text)
             payload['required_skills'] = value
             context.user_data['edit_role_payload'] = payload
-            context.user_data['awaiting'] = 'edit_role_capacity'
-            original = context.user_data.get('edit_role_original') or {}
-            prompt = (
-                f"Вместимость (сейчас: {original.get('capacity') or '–'}).\n"
-                "Введите число, «пропустить» или «-»/«очистить», чтобы удалить."
-            )
-            await update.message.reply_text(self._fix_text(prompt))
-            return
-
-        if awaiting == 'edit_role_capacity':
-            payload = context.user_data.get('edit_role_payload') or {}
-            value = self._normalize_edit_input(text)
-            if value not in (self.EDIT_KEEP, None):
-                try:
-                    int(str(value))
-                except Exception:
-                    await update.message.reply_text(
-                        self._fix_text('Вместимость должна быть числом. Введите число, «пропустить» или «-».')
-                    )
-                    return
-            payload['capacity'] = value
-            context.user_data['edit_role_payload'] = payload
             await self._finish_edit_role(update, context)
             return
 
@@ -2064,9 +2009,6 @@ class EntityHandlers(BaseHandlers):
                 data[key] = ''
             else:
                 data[key] = value
-        capacity_value = payload.get('capacity', self.EDIT_KEEP)
-        if capacity_value != self.EDIT_KEEP:
-            data['capacity'] = '' if capacity_value is None else str(capacity_value)
         res = await self._api_post('/api/update-role', data=data)
         context.user_data['awaiting'] = None
         context.user_data.pop('edit_role_payload', None)

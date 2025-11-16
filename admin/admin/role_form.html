@@ -34,10 +34,6 @@
         <span class="title">Ключевые навыки</span>
         <input type="text" name="required_skills" value="{{ current_role.required_skills or '' }}" placeholder="Введите навыки через запятую">
       </label>
-      <label>
-        <span class="title">Количество позиций</span>
-        <input type="number" name="capacity" min="1" value="{{ current_role.capacity or '' }}" placeholder="Например 3">
-      </label>
       <div class="topic-actions">
         <button class="btn" type="submit">{{ submit_label }}</button>
         <a class="btn-secondary" href="/topic/{{ topic.id }}">Отмена</a>

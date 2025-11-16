@@ -295,15 +295,13 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         name: str = Form(...),
         description: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
-        capacity: Optional[str] = Form(None),
     ):
         """Создаёт новую роль и инициирует выгрузку в Google Sheets."""
         with ctx.get_conn() as conn, conn.cursor() as cur:
-            capacity_val = parse_optional_int(capacity)
             cur.execute(
                 '''
                 INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, now(), now())
+                VALUES (%s, %s, %s, %s, NULL, now(), now())
                 RETURNING id
                 ''',
                 (
@@ -311,7 +309,6 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                     name.strip(),
                     description or None,
                     required_skills or None,
-                    capacity_val,
                 ),
             )
             new_role_row = cur.fetchone()
@@ -360,23 +357,21 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         name: str = Form(...),
         description: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
-        capacity: Optional[str] = Form(None),
     ):
         """Обновляет параметры роли и ставит задачу на пересчёт эмбеддинга."""
         with ctx.get_conn() as conn, conn.cursor() as cur:
-            capacity_val = parse_optional_int(capacity)
             cur.execute(
                 '''
                 UPDATE roles
                 SET name=%s,
                     description=%s,
                     required_skills=%s,
-                    capacity=%s,
+                    capacity=NULL,
                     updated_at=now()
                 WHERE id=%s
                 RETURNING topic_id
                 ''',
-                (name.strip(), (description or None), (required_skills or None), capacity_val, role_id),
+                (name.strip(), (description or None), (required_skills or None), role_id),
             )
             row = cur.fetchone()
             if not row:

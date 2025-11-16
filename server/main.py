@@ -1126,46 +1126,41 @@ def api_add_role(
     name: str = Form(...),
     description: Optional[str] = Form(None),
     required_skills: Optional[str] = Form(None),
-    capacity: Optional[str] = Form(None),
 ):
     """Выполняет функцию api_add_role."""
     logger.info(
-        'api_add_role request: topic_id=%s, name=%s, description_len=%s, required_len=%s, capacity_raw=%s',
+        'api_add_role request: topic_id=%s, name=%s, description_len=%s, required_len=%s',
         topic_id,
         _shorten(name, 80),
         len(description or ''),
         len(required_skills or ''),
-        capacity,
     )
     with get_conn() as conn, conn.cursor() as cur:
-        capacity_val = parse_optional_int(capacity)
         name_clean = (name or '').strip()
         if not name_clean:
             raise HTTPException(status_code=400, detail='name is required')
         description_val = normalize_optional_str(description)
         required_val = normalize_optional_str(required_skills)
         logger.debug(
-            'api_add_role normalized: name=%s, capacity=%s, description_len=%s, required_len=%s',
+            'api_add_role normalized: name=%s, description_len=%s, required_len=%s',
             name_clean,
-            capacity_val,
             len(description_val or ''),
             len(required_val or ''),
         )
         cur.execute(
             '''
             INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, now(), now())
+            VALUES (%s, %s, %s, %s, NULL, now(), now())
             RETURNING id
-            ''', (topic_id, name_clean, description_val, required_val, capacity_val),
+            ''', (topic_id, name_clean, description_val, required_val),
         )
         rid = cur.fetchone()[0]
         enqueue_refresh(conn, 'role', rid)
         commit_with_refresh(conn)
         logger.info(
-            'api_add_role inserted role_id=%s for topic=%s (capacity=%s)',
+            'api_add_role inserted role_id=%s for topic=%s',
             rid,
             topic_id,
-            capacity_val,
         )
     sync_result = _sync_roles_sheet()
     logger.info('api_add_role: roles sheet sync triggered=%s', sync_result)
@@ -1270,11 +1265,9 @@ def api_update_role(
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     required_skills: Optional[str] = Form(None),
-    capacity: Optional[str] = Form(None),
 ):
     """Выполняет функцию api_update_role."""
     editor_id = parse_optional_int(editor_user_id)
-    capacity_val = parse_optional_int(capacity)
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
@@ -1305,19 +1298,16 @@ def api_update_role(
             if required_skills is not None
             else row['required_skills']
         )
-        capacity_value = capacity_val if capacity is not None else row['capacity']
-
         cur.execute(
             '''
             UPDATE roles
-            SET name=%s, description=%s, required_skills=%s, capacity=%s, updated_at=now()
+            SET name=%s, description=%s, required_skills=%s, capacity=NULL, updated_at=now()
             WHERE id=%s
             ''',
             (
                 name_val,
                 description_val,
                 required_val,
-                capacity_value,
                 role_id,
             ),
         )
