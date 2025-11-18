@@ -74,6 +74,7 @@ docker-compose.override.yml
 *.sqlite
 *.sqlite3
 pgdata/
+data/
 
 # Тестовые файлы
 test_*.py

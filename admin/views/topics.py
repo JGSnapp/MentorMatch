@@ -313,7 +313,8 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
             )
             new_role_row = cur.fetchone()
             if new_role_row:
-                refresh_role_embedding(conn, new_role_row[0])
+                enqueue_refresh(conn, "role", new_role_row[0])
+                commit_with_refresh(conn)
         sync_roles_sheet()
         notice = urllib.parse.quote('Роль добавлена')
         return RedirectResponse(url=f'/topic/{topic_id}?msg={notice}', status_code=303)

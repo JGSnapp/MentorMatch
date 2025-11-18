@@ -114,6 +114,7 @@ services:
     volumes:
       - ./matching:/app/matching
       - media_data:/data/media
+      - matching_models:/app/matching/models
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,7 +144,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -166,7 +167,7 @@ services:
       - pgadmin_data:/var/lib/pgadmin
 
 volumes:
-  pgdata:
   pgadmin_data:
   media_data:
+  matching_models:
 

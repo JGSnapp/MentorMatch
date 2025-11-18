@@ -496,7 +496,51 @@ async def _startup_event():
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sc_topic ON supervisor_candidates(topic_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sc_user_score2 ON supervisor_candidates(user_id, score DESC)")
-                                             
+
+            student_profile_columns = (
+                "submitted_at TIMESTAMPTZ",
+                "isu_number TEXT",
+                "subdivision TEXT",
+                "direction TEXT",
+                "status TEXT",
+                "course SMALLINT",
+                "group_number TEXT",
+                "education_program TEXT",
+                "phone TEXT",
+                "dev_track SMALLINT",
+                "science_track SMALLINT",
+                "startup_track SMALLINT",
+                "interests TEXT",
+                "dislikes TEXT",
+                "skills TEXT",
+                "skills_to_learn TEXT",
+                "commercial_experience TEXT",
+                "noncommercial_experience TEXT",
+                "portfolio TEXT",
+                "achievements TEXT",
+                "hobbies TEXT",
+                "cv TEXT",
+                "customer_discovery_level SMALLINT",
+                "sales_level SMALLINT",
+                "tech_execution_level SMALLINT",
+                "data_analytics_level SMALLINT",
+                "marketing_design_level SMALLINT",
+                "finance_business_level SMALLINT",
+                "team_leadership_level SMALLINT",
+                "apply_master BOOLEAN",
+                "hours_per_week SMALLINT",
+                "thematic_choice TEXT",
+                "team_role TEXT",
+                "plan_for_lab TEXT",
+                "motivation_letter TEXT",
+                "police_clearance TEXT",
+            )
+            for column_def in student_profile_columns:
+                try:
+                    cur.execute(f"ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS {column_def}")
+                except Exception:
+                    pass
+
             try:
                 cur.execute("ALTER TABLE topics ADD COLUMN IF NOT EXISTS direction SMALLINT")
             except Exception as _e:

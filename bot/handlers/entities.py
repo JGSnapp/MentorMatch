@@ -3,10 +3,17 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import logging
+from io import BytesIO
+from urllib.parse import urlsplit
+
+import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from .base import BaseHandlers
+
+logger = logging.getLogger(__name__)
 
 MEMBER_ROLE_NAME = '%member'
 
@@ -215,94 +222,241 @@ class EntityHandlers(BaseHandlers):
         is_admin = self._is_admin(update)
         is_self = self._ids_equal(viewer_id, sid)
         can_edit = is_admin or is_self
-                
-        def _short(value: Optional[str], limit: int = 200) -> str:
-            text = (value or '').strip()
-            if not text:
-                return '–'
-            return text if len(text) <= limit else text[: limit - 1] + '…'
 
-        def _fmt_level(value: Optional[Any]) -> str:
-            if value in (None, ''):
-                return '–'
-            return str(value)
+        def _normalize_value(value: Optional[Any]) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, bool):
+                return "Да" if value else "Нет"
+            if isinstance(value, (int, float)):
+                text_val = str(value)
+            else:
+                text_val = str(value).strip()
+            if not text_val:
+                return ""
+            lowered = text_val.lower()
+            if lowered in {"-", "—", "–"}:
+                return ""
+            if isinstance(value, str) and self._should_skip_optional(text_val):
+                return ""
+            return text_val
 
-        def _fmt_bool(value: Optional[Any]) -> str:
-            if value is True:
-                return 'Да'
-            if value is False:
-                return 'Нет'
-            return '–'
+        def _format_line(label: str, value: Optional[Any]) -> Optional[str]:
+            text_val = _normalize_value(value)
+            if not text_val:
+                return None
+            return f"• {label}: {text_val}"
 
-        lines = [
-            f"Студент: {s.get('full_name','–')}",
-            f"Username: {s.get('username') or '–'}",
-            f"Email: {s.get('email') or '–'}",
-            f"Номер ИСУ: {s.get('isu_number') or '–'}",
-            f"Подразделение: {s.get('subdivision') or '–'}",
-            f"Направление: {s.get('direction') or '–'}",
-            f"Статус/курс/группа: {s.get('status') or '–'} / {s.get('course') or '–'} / {s.get('group_number') or '–'}",
-            f"Образовательная программа: {s.get('education_program') or '–'}",
-            f"Телефон: {s.get('phone') or '–'}",
-            (
-                "Треки развития (0-5): разработка {dev}, наука {science}, стартап {startup}"
-            ).format(
-                dev=_fmt_level(s.get('dev_track')),
-                science=_fmt_level(s.get('science_track')),
-                startup=_fmt_level(s.get('startup_track')),
-            ),
-            f"Hard skills (знаю): {s.get('skills') or '–'}",
-            f"Hard skills (хочу изучить): {s.get('skills_to_learn') or '–'}",
-            f"Область интересов: {_short(s.get('interests'))}",
-            f"Чем заниматься не хотите: {_short(s.get('dislikes'))}",
-            f"Коммерческий опыт: {_short(s.get('commercial_experience'))}",
-            f"Некоммерческий/академический опыт: {_short(s.get('noncommercial_experience'))}",
-            f"Портфолио / репозиторий: {s.get('portfolio') or '–'}",
-            f"Достижения: {_short(s.get('achievements'))}",
-            f"Хобби: {_short(s.get('hobbies'))}",
-            (
-                "Навыки (0-5): CustDev {cust}, Sales {sales}, Tech {tech}, Data {data}, "
-                "Marketing {mkt}, Finance {fin}, Leadership {lead}"
-            ).format(
-                cust=_fmt_level(s.get('customer_discovery_level')),
-                sales=_fmt_level(s.get('sales_level')),
-                tech=_fmt_level(s.get('tech_execution_level')),
-                data=_fmt_level(s.get('data_analytics_level')),
-                mkt=_fmt_level(s.get('marketing_design_level')),
-                fin=_fmt_level(s.get('finance_business_level')),
-                lead=_fmt_level(s.get('team_leadership_level')),
-            ),
-            f"Планирует магистратуру/аспирантуру: {_fmt_bool(s.get('apply_master'))}",
-            f"Часы на проект: {s.get('hours_per_week') or '–'}",
-            f"Желаемая роль: {s.get('team_role') or '–'}",
-            f"Тематики: {_short(s.get('thematic_choice'))}",
-            f"План в лаборатории: {_short(s.get('plan_for_lab'))}",
-            f"Мотивационное письмо: {_short(s.get('motivation_letter'))}",
-            f"Справка об отсутствии судимости: {s.get('police_clearance') or '–'}",
-            f"CV: {(s.get('cv') or '–')[:200]}",
-            f"ID: {s.get('id')}",
+        def _format_block(label: str, value: Optional[Any]) -> Optional[str]:
+            text_val = _normalize_value(value)
+            if not text_val:
+                return None
+            return f"{label}:\n{text_val}"
+
+        lines: List[str] = []
+        name = _normalize_value(s.get("full_name")) or "—"
+        header_lines = [f"👤 Студент: {name}"]
+        username_text = _normalize_value(s.get("username"))
+        if username_text:
+            header_lines.append(f"🔗 Username: {username_text}")
+        email_text = _normalize_value(s.get("email"))
+        if email_text:
+            header_lines.append(f"✉️ Email: {email_text}")
+        header_lines.append(f"ID: {s.get('id')}")
+        lines.extend(header_lines)
+        lines.append("")
+
+        status_parts: List[str] = []
+        for key in ("status", "course", "group_number"):
+            val = _normalize_value(s.get(key))
+            if val:
+                status_parts.append(val)
+        status_value = " / ".join(status_parts)
+
+        hours_val = _normalize_value(s.get("hours_per_week"))
+        general_pairs = [
+            ("Номер ИСУ", s.get("isu_number")),
+            ("Подразделение", s.get("subdivision")),
+            ("Направление", s.get("direction")),
+            ("Образовательная программа", s.get("education_program")),
+            ("Статус / курс / группа", status_value),
+            ("Телефон", s.get("phone")),
+            ("Часы на проект", f"{hours_val} ч/нед" if hours_val else ""),
+            ("Желаемая роль", s.get("team_role")),
+            ("Портфолио / репозиторий", s.get("portfolio")),
         ]
+        general_lines = [line for line in (_format_line(label, value) for label, value in general_pairs) if line]
+        if general_lines:
+            lines.append("📌 Основное")
+            lines.extend(general_lines)
+            lines.append("")
+
+        track_parts: List[str] = []
+        track_map = (
+            ("разработка", s.get("dev_track")),
+            ("наука", s.get("science_track")),
+            ("стартап", s.get("startup_track")),
+        )
+        for label, value in track_map:
+            level = _normalize_value(value)
+            if level:
+                track_parts.append(f"{label} {level}")
+        skill_levels: List[str] = []
+        level_map = (
+            ("CustDev", s.get("customer_discovery_level")),
+            ("Sales", s.get("sales_level")),
+            ("Tech", s.get("tech_execution_level")),
+            ("Data", s.get("data_analytics_level")),
+            ("Marketing", s.get("marketing_design_level")),
+            ("Finance", s.get("finance_business_level")),
+            ("Leadership", s.get("team_leadership_level")),
+        )
+        for label, value in level_map:
+            level = _normalize_value(value)
+            if level:
+                skill_levels.append(f"{label} {level}")
+
+        skills_pairs = [
+            ("Hard skills (знаю)", s.get("skills")),
+            ("Hard skills (хочу изучить)", s.get("skills_to_learn")),
+            ("Область интересов", s.get("interests")),
+            ("Чем заниматься не хотите", s.get("dislikes")),
+            ("Коммерческий опыт", s.get("commercial_experience")),
+            ("Некоммерческий / академический опыт", s.get("noncommercial_experience")),
+            ("Достижения", s.get("achievements")),
+            ("Хобби", s.get("hobbies")),
+            ("Планирует магистратуру/аспирантуру", s.get("apply_master")),
+        ]
+        skills_lines = []
+        if track_parts:
+            skills_lines.append(f"• Треки развития (0-5): {', '.join(track_parts)}")
+        for label, value in skills_pairs:
+            line = _format_line(label, value)
+            if line:
+                skills_lines.append(line)
+        if skill_levels:
+            skills_lines.append(f"• Навыки (0-5): {', '.join(skill_levels)}")
+        if skills_lines:
+            lines.append("💡 Навыки и опыт")
+            lines.extend(skills_lines)
+            lines.append("")
+
+        text_blocks = [
+            _format_block("Тематики", s.get("thematic_choice")),
+            _format_block("План в лаборатории", s.get("plan_for_lab")),
+            _format_block("Мотивационное письмо", s.get("motivation_letter")),
+        ]
+        for block in text_blocks:
+            if block:
+                lines.append(block)
+                lines.append("")
 
         rec = await self._api_get(f'/api/user-candidates/{sid}?limit=5') or []
         if rec:
+            while lines and not lines[-1].strip():
+                lines.pop()
             lines.append('')
-                                                                
             if rec and 'role_name' in (rec[0] or {}):
                 lines.append('Рекомендованные роли:')
                 for it in rec:
-                    lines.append(f"• #{it.get('rank')}. {it.get('role_name','–')} — {it.get('topic_title','–')} (балл={it.get('score')})")
+                    role_name = it.get('role_name') or f"Роль #{it.get('role_id')}"
+                    topic_title = it.get('topic_title') or 'без темы'
+                    rank = it.get('rank') or '—'
+                    score = it.get('score')
+                    if isinstance(score, (int, float)):
+                        score_text = f"{score:.2f}"
+                    elif score is not None:
+                        score_text = str(score)
+                    else:
+                        score_text = '—'
+                    lines.append(f"• #{rank} {role_name} — {topic_title} (score={score_text})")
             else:
                 lines.append('Рекомендованные темы:')
                 for it in rec:
-                    lines.append(f"• #{it.get('rank')}. {it.get('title','–')} (балл={it.get('score')})")
+                    title = it.get('title') or f"Тема #{it.get('topic_id')}"
+                    rank = it.get('rank') or '—'
+                    score = it.get('score')
+                    if isinstance(score, (int, float)):
+                        score_text = f"{score:.2f}"
+                    elif score is not None:
+                        score_text = str(score)
+                    else:
+                        score_text = '—'
+                    lines.append(f"• #{rank} {title} (score={score_text})")
+        while lines and not lines[-1].strip():
+            lines.pop()
         text = '\n'.join(lines)
         kb: List[List[InlineKeyboardButton]] = []
+        if _normalize_value(s.get("cv")):
+            kb.append([InlineKeyboardButton('📄 Получить CV', callback_data=f'student_cv_{sid}')])
         if can_edit:
             kb.append([InlineKeyboardButton('✏️ Редактировать профиль', callback_data=f'edit_student_{sid}')])
         if is_admin or is_self:
             kb.append([InlineKeyboardButton('🧠 Подобрать роль', callback_data=f'match_student_{sid}')])
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
+
+    async def cb_student_cv(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выполняет функцию cb_student_cv."""
+        q = update.callback_query
+        await self._answer_callback(q)
+        try:
+            sid = int((q.data or "").split('_')[-1])
+        except Exception:
+            await self._answer_callback(q, text=self._fix_text('Некорректный идентификатор студента.'), show_alert=True)
+            return
+        student = await self._api_get(f'/api/students/{sid}')
+        if not student:
+            await self._answer_callback(q, text=self._fix_text('Профиль студента не найден.'), show_alert=True)
+            return
+        cv_raw = (student.get('cv') or '').strip()
+        if not cv_raw:
+            await self._answer_callback(q, text=self._fix_text('CV отсутствует.'), show_alert=True)
+            return
+        if cv_raw.startswith('http://') or cv_raw.startswith('https://'):
+            cv_url = cv_raw
+        else:
+            base = self.server_url.rstrip('/')
+            cv_url = f"{base}/{cv_raw.lstrip('/')}"
+        chat_id = None
+        if q and q.message:
+            chat_id = q.message.chat_id
+        if chat_id is None and update.effective_chat:
+            chat_id = update.effective_chat.id
+        caption = self._fix_text(f"CV студента {student.get('full_name') or sid}")
+        if chat_id is None:
+            logger.warning("Unable to determine chat_id for CV request (student_id=%s)", sid)
+            return
+        file_bytes: Optional[bytes] = None
+        filename = None
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(cv_url)
+                response.raise_for_status()
+                file_bytes = response.content
+                disposition = response.headers.get("content-disposition") or ""
+                if "filename=" in disposition:
+                    filename = disposition.split("filename=")[-1].strip().strip('"').strip("'")
+        except Exception as exc:
+            logger.warning("Failed to download CV for student %s: %s", sid, exc)
+
+        if file_bytes:
+            if not filename:
+                path_part = urlsplit(cv_url).path.rstrip("/").split("/")[-1]
+                filename = path_part or "cv.pdf"
+            try:
+                bio = BytesIO(file_bytes)
+                bio.name = filename
+                await context.bot.send_document(chat_id=chat_id, document=bio, caption=caption)
+                return
+            except Exception as exc:
+                logger.warning("Failed to send CV file for student %s: %s", sid, exc)
+
+        fallback_text = self._fix_text(f"CV студента {student.get('full_name') or sid}: {cv_url}")
+        if q and q.message:
+            await q.message.reply_text(fallback_text)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=fallback_text)
 
     async def cb_edit_student_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_edit_student_start."""

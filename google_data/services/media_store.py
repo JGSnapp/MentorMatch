@@ -6,6 +6,7 @@ import re
 import time
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import requests
 from requests import Response
@@ -78,6 +79,23 @@ def _download_with_retries(url: str, *, attempts: int = 3, timeout: int = 30) ->
     raise RuntimeError("Download failed without an explicit requests exception")
 
 
+def _looks_like_google_signin(response: Response, first_chunk: bytes) -> bool:
+    """Detect redirects to Google Accounts auth instead of the real file."""
+    netloc = urlparse(response.url).netloc.lower()
+    if netloc.endswith("accounts.google.com"):
+        return True
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "text/html" not in content_type:
+        return False
+    snippet = first_chunk.decode("utf-8", errors="ignore").lower()
+    if not snippet or "google" not in snippet:
+        return False
+    signin_tokens = ("signin", "sign-in", "sign in")
+    if not any(token in snippet for token in signin_tokens):
+        return False
+    return "drive" in snippet or "accounts" in snippet
+
+
 def persist_media_from_url(conn, owner_user_id: Optional[int], url: str, category: str = "cv") -> Tuple[int, str]:
     """Скачивает файл, сохраняет его локально и регистрирует запись в базе."""
     if not url or not url.strip():
@@ -89,6 +107,11 @@ def persist_media_from_url(conn, owner_user_id: Optional[int], url: str, categor
     _ensure_media_root()
 
     response = _download_with_retries(url)
+    chunk_iter = response.iter_content(chunk_size=8192)
+    first_chunk = next(chunk_iter, b"")
+    if _looks_like_google_signin(response, first_chunk):
+        raise PermissionError("Google Drive link requires authentication or is not shared publicly")
+
     content_type = response.headers.get("Content-Type") or "application/octet-stream"
     filename = _safe_name(_guess_filename(url, response.headers.get("Content-Disposition")))
     if not os.path.splitext(filename)[1]:
@@ -113,7 +136,10 @@ def persist_media_from_url(conn, owner_user_id: Optional[int], url: str, categor
 
     size = 0
     with open(path, "wb") as handle:
-        for chunk in response.iter_content(chunk_size=8192):
+        if first_chunk:
+            handle.write(first_chunk)
+            size += len(first_chunk)
+        for chunk in chunk_iter:
             if chunk:
                 handle.write(chunk)
                 size += len(chunk)

@@ -177,14 +177,23 @@ HEADER_ALIASES: Dict[str, List[str]] = {
 }
 
 
-                                                
+                                                            
+def _normalize_for_match(value: str) -> str:
+    """Return lowercase header/alias stripped of spaces for resilient comparisons."""
+    return _simplify(value).replace(" ", "")
+
+
 def _build_col_index(headers: List[str]) -> Dict[str, int]:
     """Сопоставляет заголовки таблицы с ожидаемыми ключами анкеты студентов."""
     idx_map: Dict[str, int] = {}
-    sim = [_simplify(h) for h in headers]
+    sim_raw = [_simplify(h) for h in headers]
+    sim = [h.replace(" ", "") for h in sim_raw]
     for key, aliases in HEADER_ALIASES.items():
+        alias_norms = [_normalize_for_match(a) for a in aliases]
         for i, h in enumerate(sim):
-            if any(a in h for a in aliases):
+            if not h:
+                continue
+            if any(a and a in h for a in alias_norms):
                 idx_map[key] = i
                 break
     if (os.getenv('LOG_LEVEL') or '').upper() == 'DEBUG':
@@ -335,15 +344,19 @@ SUP_HEADER_ALIASES: Dict[str, List[str]] = {
 def _build_col_index_sup(headers: List[str]) -> Dict[str, int]:
     """Определяет индексы колонок в анкете наставников по известным заголовкам."""
     idx_map: Dict[str, Any] = {}
-    sim = [_simplify(h) for h in headers]
+    sim_raw = [_simplify(h) for h in headers]
+    sim = [h.replace(" ", "") for h in sim_raw]
     for key, aliases in SUP_HEADER_ALIASES.items():
+        alias_norms = [_normalize_for_match(a) for a in aliases]
         for i, h in enumerate(sim):
-            if any(a in h for a in aliases):
+            if not h:
+                continue
+            if any(a and a in h for a in alias_norms):
                 idx_map[key] = i
                 break
 
     topics_cols = []
-    for i, h in enumerate(sim):
+    for i, h in enumerate(sim_raw):
         if (('темы' in h or 'тематики' in h) and 'вкр' in h):
             topics_cols.append(i)
             if '45' in h:
