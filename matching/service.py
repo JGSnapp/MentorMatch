@@ -17,6 +17,7 @@ from .payloads import (
     dumps as dumps_payload,
 )
 from .repository import (
+    STUDENT_PROFILE_COLUMNS_SQL,
     fetch_candidates,
     fetch_role,
     fetch_roles_needing_students,
@@ -173,12 +174,10 @@ def handle_match_role(
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            """
+            f"""
             SELECT u.id AS user_id, u.full_name, u.username, u.email, u.created_at,
                    NULL::double precision AS score,
-                   sp.program, sp.skills, sp.interests, sp.cv,
-                   sp.skills_to_learn, sp.preferred_team_track, sp.team_has AS team_role, sp.team_needs,
-                   sp.dev_track, sp.science_track, sp.startup_track
+                   {STUDENT_PROFILE_COLUMNS_SQL}
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)

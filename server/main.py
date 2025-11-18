@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib import request as urllib_request
 from urllib import error as urllib_error
 
-from fastapi import FastAPI, Form, Query, HTTPException
+from fastapi import FastAPI, Form, Query, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 import psycopg2
 import psycopg2.extras
@@ -14,7 +14,12 @@ from dotenv import load_dotenv
 from clients.google_data_client import sync_roles_sheet as trigger_roles_sheet_sync
 from embedding_queue import commit_with_refresh, enqueue_refresh
 from media_store import MEDIA_ROOT
-from utils import parse_optional_int, normalize_optional_str, resolve_service_account_path
+from utils import (
+    parse_optional_int,
+    normalize_optional_str,
+    resolve_service_account_path,
+    parse_optional_bool,
+)
 
 from matching_router import create_matching_router
 from services.topic_import import (
@@ -41,6 +46,80 @@ LOG_LEVEL = _configure_logging()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(LOG_LEVEL)
+
+MEMBER_ROLE_NAME = '%member'
+
+STUDENT_PROFILE_TEXT_FIELDS = (
+    'isu_number',
+    'subdivision',
+    'direction',
+    'status',
+    'group_number',
+    'education_program',
+    'phone',
+    'interests',
+    'dislikes',
+    'skills',
+    'skills_to_learn',
+    'commercial_experience',
+    'noncommercial_experience',
+    'portfolio',
+    'achievements',
+    'hobbies',
+    'thematic_choice',
+    'team_role',
+    'plan_for_lab',
+    'motivation_letter',
+    'police_clearance',
+)
+
+STUDENT_PROFILE_INT_FIELDS = (
+    'course',
+    'dev_track',
+    'science_track',
+    'startup_track',
+    'customer_discovery_level',
+    'sales_level',
+    'tech_execution_level',
+    'data_analytics_level',
+    'marketing_design_level',
+    'finance_business_level',
+    'team_leadership_level',
+    'hours_per_week',
+)
+
+STUDENT_PROFILE_BOOL_FIELDS = ('apply_master',)
+
+
+def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
+    """Гарантирует наличие служебной роли %member для темы."""
+    cur.execute(
+        'SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    row = cur.fetchone()
+    if row:
+        return None
+    cur.execute(
+        '''
+        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        RETURNING id
+        ''',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    inserted = cur.fetchone()
+    return inserted[0] if inserted else None
+
+
+def _normalize_role_name(role_name: Optional[str]) -> Optional[str]:
+    """Скрывает служебное имя роли %member для интерфейса сообщений."""
+    if not role_name:
+        return role_name
+    name = str(role_name).strip()
+    if not name:
+        return None
+    return None if name.lower() == MEMBER_ROLE_NAME else name
 
 
 def _sync_roles_sheet(
@@ -289,6 +368,9 @@ def _maybe_test_import():
                 topic_row = cur.fetchone()
                 if topic_row:
                     enqueue_refresh(conn, 'topic', topic_row[0])
+                    member_role_id = _ensure_member_role(cur, topic_row[0])
+                    if member_role_id:
+                        enqueue_refresh(conn, 'role', member_role_id)
             commit_with_refresh(conn)
     except Exception as e:
         print(f"TEST_IMPORT failed: {e}")
@@ -333,6 +415,22 @@ async def _startup_event():
                 '''
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_roles_topic ON roles(topic_id)")
+            cur.execute(
+                '''
+                INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+                SELECT t.id, %s, NULL, NULL, NULL, now(), now()
+                FROM topics t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM roles r
+                    WHERE r.topic_id = t.id AND r.name = %s
+                )
+                RETURNING id
+                ''',
+                (MEMBER_ROLE_NAME, MEMBER_ROLE_NAME),
+            )
+            inserted_member_roles = [row[0] for row in cur.fetchall()]
+            for role_id in inserted_member_roles:
+                enqueue_refresh(conn, 'role', role_id)
             for tbl in ("users", "topics", "roles"):
                 try:
                     cur.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS embeddings VECTOR")
@@ -398,7 +496,51 @@ async def _startup_event():
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sc_topic ON supervisor_candidates(topic_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sc_user_score2 ON supervisor_candidates(user_id, score DESC)")
-                                             
+
+            student_profile_columns = (
+                "submitted_at TIMESTAMPTZ",
+                "isu_number TEXT",
+                "subdivision TEXT",
+                "direction TEXT",
+                "status TEXT",
+                "course SMALLINT",
+                "group_number TEXT",
+                "education_program TEXT",
+                "phone TEXT",
+                "dev_track SMALLINT",
+                "science_track SMALLINT",
+                "startup_track SMALLINT",
+                "interests TEXT",
+                "dislikes TEXT",
+                "skills TEXT",
+                "skills_to_learn TEXT",
+                "commercial_experience TEXT",
+                "noncommercial_experience TEXT",
+                "portfolio TEXT",
+                "achievements TEXT",
+                "hobbies TEXT",
+                "cv TEXT",
+                "customer_discovery_level SMALLINT",
+                "sales_level SMALLINT",
+                "tech_execution_level SMALLINT",
+                "data_analytics_level SMALLINT",
+                "marketing_design_level SMALLINT",
+                "finance_business_level SMALLINT",
+                "team_leadership_level SMALLINT",
+                "apply_master BOOLEAN",
+                "hours_per_week SMALLINT",
+                "thematic_choice TEXT",
+                "team_role TEXT",
+                "plan_for_lab TEXT",
+                "motivation_letter TEXT",
+                "police_clearance TEXT",
+            )
+            for column_def in student_profile_columns:
+                try:
+                    cur.execute(f"ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS {column_def}")
+                except Exception:
+                    pass
+
             try:
                 cur.execute("ALTER TABLE topics ADD COLUMN IF NOT EXISTS direction SMALLINT")
             except Exception as _e:
@@ -529,7 +671,7 @@ def api_get_students(limit: int = Query(10, ge=1, le=100), offset: int = Query(0
         cur.execute(
             '''
             SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                   sp.program, sp.skills, sp.interests, sp.cv
+                   sp.*
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE u.role = 'student'
@@ -548,7 +690,7 @@ def api_get_student(student_id: int):
         cur.execute(
             '''
             SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                   sp.program, sp.skills, sp.interests, sp.cv
+                   sp.*
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE u.role = 'student' AND u.id = %s
@@ -563,7 +705,12 @@ def api_get_student(student_id: int):
 @app.get('/api/user-topics/{user_id}', response_class=JSONResponse)
 def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
     """Выполняет функцию api_user_topics."""
-    params = {'uid': user_id, 'offset': offset, 'limit': limit}
+    params = {
+        'uid': user_id,
+        'offset': offset,
+        'limit': limit,
+        'member_role_name': MEMBER_ROLE_NAME,
+    }
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
@@ -593,6 +740,7 @@ def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: 
                           AND rs.approved_student_user_id = %(uid)s
                           AND rs.name IS NOT NULL
                           AND rs.name <> ''
+                          AND LOWER(rs.name) <> %(member_role_name)s
                     ),
                     ARRAY[]::text[]
                 ) AS approved_role_names,
@@ -848,99 +996,50 @@ def api_self_register(
 
 
 @app.post('/api/update-student-profile', response_class=JSONResponse)
-def api_update_student_profile(
-    user_id: int = Form(...),
-    program: Optional[str] = Form(None),
-    skills: Optional[str] = Form(None),
-    interests: Optional[str] = Form(None),
-    cv: Optional[str] = Form(None),
-    skills_to_learn: Optional[str] = Form(None),
-    achievements: Optional[str] = Form(None),
-    workplace: Optional[str] = Form(None),
-):
-    """Выполняет функцию api_update_student_profile."""
-    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            '''
-            SELECT program, skills, interests, cv, skills_to_learn, achievements, workplace
-            FROM student_profiles
-            WHERE user_id=%s
-            ''',
-            (user_id,),
-        )
-        existing = cur.fetchone()
-        program_val = (
-            normalize_optional_str(program)
-            if program is not None
-            else (existing.get('program') if existing else None)
-        )
-        skills_val = (
-            normalize_optional_str(skills)
-            if skills is not None
-            else (existing.get('skills') if existing else None)
-        )
-        interests_val = (
-            normalize_optional_str(interests)
-            if interests is not None
-            else (existing.get('interests') if existing else None)
-        )
-        if cv is None:
-            cv_val = existing.get('cv') if existing else None
-        else:
-            cv_val = process_cv(conn, user_id, normalize_optional_str(cv))
-        skills_to_learn_val = (
-            normalize_optional_str(skills_to_learn)
-            if skills_to_learn is not None
-            else (existing.get('skills_to_learn') if existing else None)
-        )
-        achievements_val = (
-            normalize_optional_str(achievements)
-            if achievements is not None
-            else (existing.get('achievements') if existing else None)
-        )
-        workplace_val = (
-            normalize_optional_str(workplace)
-            if workplace is not None
-            else (existing.get('workplace') if existing else None)
-        )
+async def api_update_student_profile(request: Request):
+    """Обновляет расширенный профиль студента."""
+    form = await request.form()
+    user_id = parse_optional_int(form.get('user_id'))
+    if user_id is None:
+        raise HTTPException(status_code=400, detail='user_id is required')
 
-        if existing:
+    text_fields = set(STUDENT_PROFILE_TEXT_FIELDS)
+    int_fields = set(STUDENT_PROFILE_INT_FIELDS)
+    bool_fields = set(STUDENT_PROFILE_BOOL_FIELDS)
+
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute('SELECT 1 FROM student_profiles WHERE user_id=%s', (user_id,))
+        exists = cur.fetchone() is not None
+        updates: Dict[str, Any] = {}
+
+        for field in text_fields:
+            if field in form:
+                updates[field] = normalize_optional_str(form.get(field))
+        for field in int_fields:
+            if field in form:
+                updates[field] = parse_optional_int(form.get(field))
+        for field in bool_fields:
+            if field in form:
+                updates[field] = parse_optional_bool(form.get(field))
+        if 'cv' in form:
+            updates['cv'] = process_cv(conn, user_id, normalize_optional_str(form.get('cv')))
+
+        if not exists:
             cur.execute(
-                '''
-                UPDATE student_profiles
-                SET program=%s, skills=%s, interests=%s, cv=%s, skills_to_learn=%s, achievements=%s, workplace=%s
-                WHERE user_id=%s
-                ''',
-                (
-                    program_val,
-                    skills_val,
-                    interests_val,
-                    cv_val,
-                    skills_to_learn_val,
-                    achievements_val,
-                    workplace_val,
-                    user_id,
-                ),
+                'INSERT INTO student_profiles(user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING',
+                (user_id,),
             )
+
+        if updates:
+            assignments = ', '.join(f"{col}=%s" for col in updates.keys())
+            cur.execute(
+                f'UPDATE student_profiles SET {assignments} WHERE user_id=%s',
+                (*updates.values(), user_id),
+            )
+            enqueue_refresh(conn, 'student', user_id)
+            commit_with_refresh(conn)
         else:
-            cur.execute(
-                '''
-                INSERT INTO student_profiles(user_id, program, skills, interests, cv, skills_to_learn, achievements, workplace)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ''',
-                (
-                    user_id,
-                    program_val,
-                    skills_val,
-                    interests_val,
-                    cv_val,
-                    skills_to_learn_val,
-                    achievements_val,
-                    workplace_val,
-                ),
-            )
-        enqueue_refresh(conn, 'student', user_id)
-        commit_with_refresh(conn)
+            conn.commit()
     return {'status': 'ok'}
 
 
@@ -1055,6 +1154,9 @@ def api_add_topic(
         )
         tid = cur.fetchone()[0]
         enqueue_refresh(conn, 'topic', tid)
+        member_role_id = _ensure_member_role(cur, tid)
+        if member_role_id:
+            enqueue_refresh(conn, 'role', member_role_id)
         commit_with_refresh(conn)
     return {'status': 'ok', 'topic_id': tid}
 
@@ -1065,46 +1167,41 @@ def api_add_role(
     name: str = Form(...),
     description: Optional[str] = Form(None),
     required_skills: Optional[str] = Form(None),
-    capacity: Optional[str] = Form(None),
 ):
     """Выполняет функцию api_add_role."""
     logger.info(
-        'api_add_role request: topic_id=%s, name=%s, description_len=%s, required_len=%s, capacity_raw=%s',
+        'api_add_role request: topic_id=%s, name=%s, description_len=%s, required_len=%s',
         topic_id,
         _shorten(name, 80),
         len(description or ''),
         len(required_skills or ''),
-        capacity,
     )
     with get_conn() as conn, conn.cursor() as cur:
-        capacity_val = parse_optional_int(capacity)
         name_clean = (name or '').strip()
         if not name_clean:
             raise HTTPException(status_code=400, detail='name is required')
         description_val = normalize_optional_str(description)
         required_val = normalize_optional_str(required_skills)
         logger.debug(
-            'api_add_role normalized: name=%s, capacity=%s, description_len=%s, required_len=%s',
+            'api_add_role normalized: name=%s, description_len=%s, required_len=%s',
             name_clean,
-            capacity_val,
             len(description_val or ''),
             len(required_val or ''),
         )
         cur.execute(
             '''
             INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, now(), now())
+            VALUES (%s, %s, %s, %s, NULL, now(), now())
             RETURNING id
-            ''', (topic_id, name_clean, description_val, required_val, capacity_val),
+            ''', (topic_id, name_clean, description_val, required_val),
         )
         rid = cur.fetchone()[0]
         enqueue_refresh(conn, 'role', rid)
         commit_with_refresh(conn)
         logger.info(
-            'api_add_role inserted role_id=%s for topic=%s (capacity=%s)',
+            'api_add_role inserted role_id=%s for topic=%s',
             rid,
             topic_id,
-            capacity_val,
         )
     sync_result = _sync_roles_sheet()
     logger.info('api_add_role: roles sheet sync triggered=%s', sync_result)
@@ -1209,11 +1306,9 @@ def api_update_role(
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     required_skills: Optional[str] = Form(None),
-    capacity: Optional[str] = Form(None),
 ):
     """Выполняет функцию api_update_role."""
     editor_id = parse_optional_int(editor_user_id)
-    capacity_val = parse_optional_int(capacity)
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
@@ -1244,19 +1339,16 @@ def api_update_role(
             if required_skills is not None
             else row['required_skills']
         )
-        capacity_value = capacity_val if capacity is not None else row['capacity']
-
         cur.execute(
             '''
             UPDATE roles
-            SET name=%s, description=%s, required_skills=%s, capacity=%s, updated_at=now()
+            SET name=%s, description=%s, required_skills=%s, capacity=NULL, updated_at=now()
             WHERE id=%s
             ''',
             (
                 name_val,
                 description_val,
                 required_val,
-                capacity_value,
                 role_id,
             ),
         )
@@ -1273,7 +1365,7 @@ def latest(kind: str = Query('topics', enum=['students', 'supervisors', 'topics'
             cur.execute(
                 '''
                 SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                       sp.program, sp.skills, sp.interests
+                       sp.*
                 FROM users u
                 LEFT JOIN student_profiles sp ON sp.user_id = u.id
                 WHERE u.role = 'student'
@@ -1495,7 +1587,11 @@ def _fetch_message_context(cur, message_id: int) -> Optional[Dict[str, Any]]:
         (message_id,),
     )
     row = cur.fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    data['role_name'] = _normalize_role_name(data.get('role_name'))
+    return data
 
 
 def _notify_new_application(message: Dict[str, Any]) -> None:
@@ -1510,6 +1606,7 @@ def _notify_new_application(message: Dict[str, Any]) -> None:
     topic_label = message.get('topic_title') or f"#{message.get('topic_id')}"
     topic_label = _shorten(topic_label, 70) or f"#{message.get('topic_id')}"
     role_name = message.get('role_name')
+    role_name = _normalize_role_name(role_name)
     if role_name:
         text = f"На роль «{role_name}» новая заявка."
     else:
@@ -1532,7 +1629,7 @@ def _notify_application_update(message: Dict[str, Any], action: str) -> None:
         return
     topic_label = message.get('topic_title') or f"#{message.get('topic_id')}"
     topic_label = _shorten(topic_label, 70) or f"#{message.get('topic_id')}"
-    role_name = message.get('role_name')
+    role_name = _normalize_role_name(message.get('role_name'))
 
     def _build_result_line(result_verb: str) -> str:
         """Выполняет функцию _build_result_line."""
@@ -1652,26 +1749,30 @@ def api_messages_inbox(user_id: int = Query(...), status: Optional[str] = Query(
         if status:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, su.full_name AS sender_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       su.full_name AS sender_name
                 FROM messages m
                 JOIN users su ON su.id = m.sender_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.receiver_user_id = %s AND m.status = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id, status),
+                ''', (MEMBER_ROLE_NAME, user_id, status),
             )
         else:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, su.full_name AS sender_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       su.full_name AS sender_name
                 FROM messages m
                 JOIN users su ON su.id = m.sender_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.receiver_user_id = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id,),
+                ''', (MEMBER_ROLE_NAME, user_id),
             )
         rows = cur.fetchall()
         return [dict(r) for r in rows]
@@ -1684,26 +1785,30 @@ def api_messages_outbox(user_id: int = Query(...), status: Optional[str] = Query
         if status:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, ru.full_name AS receiver_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       ru.full_name AS receiver_name
                 FROM messages m
                 JOIN users ru ON ru.id = m.receiver_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.sender_user_id = %s AND m.status = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id, status),
+                ''', (MEMBER_ROLE_NAME, user_id, status),
             )
         else:
             cur.execute(
                 '''
-                SELECT m.*, t.title AS topic_title, r.name AS role_name, ru.full_name AS receiver_name
+                SELECT m.*, t.title AS topic_title,
+                       CASE WHEN r.name = %s THEN NULL ELSE r.name END AS role_name,
+                       ru.full_name AS receiver_name
                 FROM messages m
                 JOIN users ru ON ru.id = m.receiver_user_id
                 JOIN topics t ON t.id = m.topic_id
                 LEFT JOIN roles r ON r.id = m.role_id
                 WHERE m.sender_user_id = %s
                 ORDER BY m.created_at DESC
-                ''', (user_id,),
+                ''', (MEMBER_ROLE_NAME, user_id),
             )
         rows = cur.fetchall()
         return [dict(r) for r in rows]
@@ -1844,6 +1949,3 @@ def api_student_candidates(user_id: int, limit: int = Query(5, ge=1, le=50)):
         )
         rows = cur.fetchall()
         return [dict(r) for r in rows]
-
-
-

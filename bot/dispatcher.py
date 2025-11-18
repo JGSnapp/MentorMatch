@@ -51,6 +51,9 @@ def setup(application: Application, bot) -> None:
     )
     application.add_handler(CallbackQueryHandler(bot.cb_view_student, pattern=r"^student_\d+$"))
     application.add_handler(
+        CallbackQueryHandler(bot.cb_student_cv, pattern=r"^student_cv_\d+$")
+    )
+    application.add_handler(
         CallbackQueryHandler(bot.cb_view_supervisor, pattern=r"^supervisor_\d+$")
     )
     application.add_handler(CallbackQueryHandler(bot.cb_view_topic, pattern=r"^topic_\d+$"))

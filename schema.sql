@@ -29,32 +29,42 @@ CREATE INDEX idx_users_role ON users(role);
 
 CREATE TABLE student_profiles (
   user_id         BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  submitted_at    TIMESTAMPTZ,
+  isu_number      TEXT,
+  subdivision     TEXT,
+  direction       TEXT,
+  status          TEXT,
   course          SMALLINT,
-  program         TEXT,
-  faculty         TEXT,
-  education       TEXT,
-  skills          TEXT, -- JSON/CSV
-  interests       TEXT, -- JSON/CSV
-  cv              TEXT,
-  requirements    TEXT,
-  assignments     TEXT,  -- JSON summary for UI
-  skills_to_learn TEXT,
-  achievements    TEXT,
-  supervisor_pref TEXT,
-  groundwork      TEXT,
-  wants_team      BOOLEAN,
-  team_role       TEXT,
-
-  team_has        TEXT,
-
-  team_needs      TEXT,
-  apply_master    BOOLEAN,
-  workplace       TEXT,
-  preferred_team_track TEXT,
+  group_number    TEXT,
+  education_program TEXT,
+  phone           TEXT,
   dev_track       SMALLINT,
   science_track   SMALLINT,
   startup_track   SMALLINT,
-  final_work_pref TEXT
+  interests       TEXT,
+  dislikes        TEXT,
+  skills          TEXT,
+  skills_to_learn TEXT,
+  commercial_experience   TEXT,
+  noncommercial_experience TEXT,
+  portfolio       TEXT,
+  achievements    TEXT,
+  hobbies         TEXT,
+  cv              TEXT,
+  customer_discovery_level SMALLINT,
+  sales_level     SMALLINT,
+  tech_execution_level SMALLINT,
+  data_analytics_level SMALLINT,
+  marketing_design_level SMALLINT,
+  finance_business_level SMALLINT,
+  team_leadership_level SMALLINT,
+  apply_master    BOOLEAN,
+  hours_per_week  SMALLINT,
+  thematic_choice TEXT,
+  team_role       TEXT,
+  plan_for_lab    TEXT,
+  motivation_letter TEXT,
+  police_clearance TEXT
 );
 
 CREATE TABLE supervisor_profiles (

@@ -55,7 +55,6 @@
               </form>
             </div>
             <div class="muted">Навыки: {{ role.required_skills or '—' }}</div>
-            <div class="muted">Вместимость: {{ role.capacity or '—' }}</div>
             {% if role.approved_student_user_id %}
               <div class="muted">Назначен студент ID {{ role.approved_student_user_id }}</div>
             {% endif %}

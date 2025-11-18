@@ -11,13 +11,36 @@ from ..services.matching_client import (
     refresh_student_embedding,
     refresh_supervisor_embedding,
     refresh_topic_embedding,
+    refresh_role_embedding,
 )
 from ..utils.topic_extraction import extract_topics_from_text, fallback_extract_topics
 
 logger = logging.getLogger(__name__)
 
+MEMBER_ROLE_NAME = '%member'
 
-                                                               
+
+def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
+    """Создаёт роль %member для темы, если она отсутствует."""
+    cur.execute(
+        'SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    row = cur.fetchone()
+    if row:
+        return None
+    cur.execute(
+        '''
+        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        RETURNING id
+        ''',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    inserted = cur.fetchone()
+    return inserted[0] if inserted else None
+
+
 def normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
     """Преобразует ввод пользователя в каноническую ссылку Telegram."""
     if not raw:
@@ -87,12 +110,10 @@ def import_students(
     conn: connection,
     rows: Iterable[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Импортирует студентов из анкет, создавая пользователей, профили и темы."""
+    """Импортирует студентов из анкет, создавая пользователей и профили."""
     inserted_users = 0
     inserted_profiles = 0
-    inserted_topics = 0
     student_refresh_queue: Set[int] = set()
-    topic_refresh_queue: Set[int] = set()
 
     with conn.cursor() as cur:
         for idx, row in enumerate(rows):
@@ -139,9 +160,6 @@ def import_students(
             if row.get("consent_personal") is not None:
                 updates.append("consent_personal=%s")
                 params.append(row["consent_personal"])
-            if row.get("consent_private") is not None:
-                updates.append("consent_private=%s")
-                params.append(row["consent_private"])
             if updates:
                 params.append(user_id)
                 cur.execute(
@@ -150,130 +168,78 @@ def import_students(
                 )
                 needs_student_refresh = True
 
-            cur.execute("SELECT 1 FROM student_profiles WHERE user_id=%s", (user_id,))
-            profile_exists = cur.fetchone() is not None
             skills_have = _comma_join(row.get("hard_skills_have"))
             skills_want = _comma_join(row.get("hard_skills_want"))
             interests = _comma_join(row.get("interests"))
-            requirements = row.get("supervisor_preference")
             cv_value = process_cv(conn, user_id, row.get("cv"))
+            profile_values = {
+                'submitted_at': row.get('timestamp'),
+                'isu_number': row.get('isu_number'),
+                'subdivision': row.get('subdivision'),
+                'direction': row.get('direction'),
+                'education_program': row.get('education_program'),
+                'status': row.get('status'),
+                'course': row.get('course'),
+                'group_number': row.get('group_number'),
+                'phone': row.get('phone'),
+                'skills': skills_have,
+                'skills_to_learn': skills_want,
+                'interests': interests,
+                'dislikes': row.get('dislikes'),
+                'commercial_experience': row.get('commercial_experience'),
+                'noncommercial_experience': row.get('noncommercial_experience'),
+                'portfolio': row.get('portfolio'),
+                'achievements': row.get('achievements'),
+                'hobbies': row.get('hobbies'),
+                'cv': cv_value,
+                'customer_discovery_level': row.get('customer_discovery_level'),
+                'sales_level': row.get('sales_level'),
+                'tech_execution_level': row.get('tech_execution_level'),
+                'data_analytics_level': row.get('data_analytics_level'),
+                'marketing_design_level': row.get('marketing_design_level'),
+                'finance_business_level': row.get('finance_business_level'),
+                'team_leadership_level': row.get('team_leadership_level'),
+                'apply_master': row.get('apply_master'),
+                'hours_per_week': row.get('hours_per_week'),
+                'thematic_choice': row.get('thematic_choice'),
+                'team_role': row.get('team_role'),
+                'plan_for_lab': row.get('plan_for_lab'),
+                'motivation_letter': row.get('motivation_letter'),
+                'police_clearance': row.get('police_clearance'),
+                'dev_track': row.get('dev_track'),
+                'science_track': row.get('science_track'),
+                'startup_track': row.get('startup_track'),
+            }
 
-            profile_args = (
-                row.get("program"),
-                skills_have,
-                interests,
-                cv_value,
-                requirements,
-                skills_want,
-                row.get("achievements"),
-                row.get("supervisor_preference"),
-                row.get("groundwork"),
-                row.get("wants_team"),
-                row.get("team_role"),
-                row.get("team_has"),
-                row.get("team_needs"),
-                row.get("apply_master"),
-                row.get("workplace"),
-                row.get("preferred_team_track"),
-                row.get("dev_track"),
-                row.get("science_track"),
-                row.get("startup_track"),
-                row.get("final_work_preference"),
+            columns = list(profile_values.keys())
+            values = [profile_values[col] for col in columns]
+            placeholders = ', '.join(['%s'] * len(columns))
+            updates_sql = ', '.join(f"{col}=EXCLUDED.{col}" for col in columns)
+            cur.execute(
+                f"""
+                INSERT INTO student_profiles(user_id, {', '.join(columns)})
+                VALUES (%s, {placeholders})
+                ON CONFLICT (user_id) DO UPDATE SET {updates_sql}
+                """,
+                (user_id, *values),
             )
-
-            if profile_exists:
-                cur.execute(
-                    """
-                    UPDATE student_profiles
-                    SET program=%s, skills=%s, interests=%s, cv=%s, requirements=%s,
-                        skills_to_learn=%s, achievements=%s, supervisor_pref=%s, groundwork=%s,
-                        wants_team=%s, team_role=%s, team_has=%s, team_needs=%s,
-                        apply_master=%s, workplace=%s,
-                        preferred_team_track=%s, dev_track=%s, science_track=%s, startup_track=%s,
-                        final_work_pref=%s
-                    WHERE user_id=%s
-                    """,
-                    (*profile_args, user_id),
-                )
-                needs_student_refresh = True
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO student_profiles(
-                        user_id, program, skills, interests, cv, requirements,
-                        skills_to_learn, achievements, supervisor_pref, groundwork,
-                        wants_team, team_role, team_has, team_needs, apply_master, workplace,
-                        preferred_team_track, dev_track, science_track, startup_track, final_work_pref
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s)
-                    """,
-                    (user_id, *profile_args),
-                )
-                needs_student_refresh = True
+            needs_student_refresh = True
             inserted_profiles += 1
-
-            topic_payload = row.get("topic") or {}
-            has_topic = row.get("has_own_topic")
-            title = (topic_payload.get("title") or "").strip()
-            if has_topic and title:
-                cur.execute(
-                    "SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s",
-                    (user_id, title),
-                )
-                if not cur.fetchone():
-                    description = (topic_payload.get("description") or "").strip()
-                    groundwork = row.get("groundwork")
-                    if groundwork:
-                        tail = f"\n\nИмеющийся задел: {groundwork}".strip()
-                        description = f"{description}\n{tail}" if description else tail
-                    practical = topic_payload.get("practical_importance") or None
-                    if practical:
-                        tail = f"\n\nПрактическая значимость: {practical}".strip()
-                        description = f"{description}\n{tail}" if description else tail
-                    cur.execute(
-                        """
-                        INSERT INTO topics(author_user_id, title, description, expected_outcomes,
-                                           required_skills, seeking_role, is_active, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, 'supervisor', TRUE, now(), now())
-                        RETURNING id
-                        """,
-                        (
-                            user_id,
-                            title,
-                            description or None,
-                            topic_payload.get("expected_outcomes"),
-                            skills_have,
-                        ),
-                    )
-                    topic_row = cur.fetchone()
-                    if topic_row:
-                        topic_refresh_queue.add(topic_row[0])
-                    inserted_topics += 1
             if needs_student_refresh:
                 student_refresh_queue.add(user_id)
 
     conn.commit()
     for student_id in student_refresh_queue:
         refresh_student_embedding(student_id)
-    for topic_id in topic_refresh_queue:
-        refresh_topic_embedding(topic_id)
     return {
         "status": "success",
-        "message": (
-            "Импорт завершён: добавлено пользователей: {users}, обновлено профилей: {profiles},"
-            " создано тем: {topics}."
-        ).format(
+        "message": "Импорт завершён: добавлено пользователей: {users}, обновлено профилей: {profiles}.".format(
             users=inserted_users,
             profiles=inserted_profiles,
-            topics=inserted_topics,
         ),
         "stats": {
             "inserted_users": inserted_users,
             "inserted_profiles": inserted_profiles,
-            "inserted_topics": inserted_topics,
         },
     }
 
@@ -400,7 +366,11 @@ def import_supervisors(
                     )
                     inserted_topic_row = cur.fetchone()
                     if inserted_topic_row:
-                        topic_refresh_queue.add(inserted_topic_row[0])
+                        topic_id = inserted_topic_row[0]
+                        topic_refresh_queue.add(topic_id)
+                        member_role_id = _ensure_member_role(cur, topic_id)
+                        if member_role_id:
+                            refresh_role_embedding(member_role_id)
                     inserted_topics += 1
 
             _insert_from_text(row.get("topics_09"), 9)
@@ -441,3 +411,4 @@ __all__ = [
     "import_students",
     "import_supervisors",
 ]
+

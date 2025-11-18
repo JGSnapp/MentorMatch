@@ -12,6 +12,29 @@ from ..context import AdminContext
 from ..embedding_queue import enqueue_refresh, commit_with_refresh
 from ..utils_common import parse_optional_int
 
+MEMBER_ROLE_NAME = '%member'
+
+
+def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
+    """Создаёт служебную роль %member для темы, если её ещё нет."""
+    cur.execute(
+        'SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    row = cur.fetchone()
+    if row:
+        return None
+    cur.execute(
+        '''
+        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        RETURNING id
+        ''',
+        (topic_id, MEMBER_ROLE_NAME),
+    )
+    inserted = cur.fetchone()
+    return inserted[0] if inserted else None
+
 def register(router: APIRouter, ctx: AdminContext) -> None:
     """Подключает административные страницы управления темами и ролями."""
     templates = ctx.templates
@@ -95,6 +118,9 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 if inserted:
                     topic_id_created = inserted[0]
                     enqueue_refresh(conn, "topic", topic_id_created)
+                    member_role_id = _ensure_member_role(cur, topic_id_created)
+                    if member_role_id:
+                        enqueue_refresh(conn, 'role', member_role_id)
         notice = urllib.parse.quote('Тема добавлена')
         return RedirectResponse(url=f'/?tab=topics&msg={notice}', status_code=303)
 
@@ -269,15 +295,13 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         name: str = Form(...),
         description: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
-        capacity: Optional[str] = Form(None),
     ):
         """Создаёт новую роль и инициирует выгрузку в Google Sheets."""
         with ctx.get_conn() as conn, conn.cursor() as cur:
-            capacity_val = parse_optional_int(capacity)
             cur.execute(
                 '''
                 INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, now(), now())
+                VALUES (%s, %s, %s, %s, NULL, now(), now())
                 RETURNING id
                 ''',
                 (
@@ -285,12 +309,12 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                     name.strip(),
                     description or None,
                     required_skills or None,
-                    capacity_val,
                 ),
             )
             new_role_row = cur.fetchone()
             if new_role_row:
-                refresh_role_embedding(conn, new_role_row[0])
+                enqueue_refresh(conn, "role", new_role_row[0])
+                commit_with_refresh(conn)
         sync_roles_sheet()
         notice = urllib.parse.quote('Роль добавлена')
         return RedirectResponse(url=f'/topic/{topic_id}?msg={notice}', status_code=303)
@@ -334,23 +358,21 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         name: str = Form(...),
         description: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
-        capacity: Optional[str] = Form(None),
     ):
         """Обновляет параметры роли и ставит задачу на пересчёт эмбеддинга."""
         with ctx.get_conn() as conn, conn.cursor() as cur:
-            capacity_val = parse_optional_int(capacity)
             cur.execute(
                 '''
                 UPDATE roles
                 SET name=%s,
                     description=%s,
                     required_skills=%s,
-                    capacity=%s,
+                    capacity=NULL,
                     updated_at=now()
                 WHERE id=%s
                 RETURNING topic_id
                 ''',
-                (name.strip(), (description or None), (required_skills or None), capacity_val, role_id),
+                (name.strip(), (description or None), (required_skills or None), role_id),
             )
             row = cur.fetchone()
             if not row:

@@ -27,20 +27,96 @@
         </label>
       </div>
       <label>
+        <span class="title">Направление</span>
+        <input type="text" name="direction" value="{{ student.direction or '' }}">
+      </label>
+      <label>
         <span class="title">Образовательная программа</span>
-        <input type="text" name="program" value="{{ student.program or '' }}">
+        <input type="text" name="education_program" value="{{ student.education_program or '' }}">
       </label>
+      <div class="form-grid three">
+        <label>
+          <span class="title">Статус</span>
+          <input type="text" name="status_value" value="{{ student.status or '' }}" placeholder="Бакалавр, магистр и т.д.">
+        </label>
+        <label>
+          <span class="title">Курс</span>
+          <input type="number" name="course" value="{{ student.course or '' }}" min="1" max="6">
+        </label>
+        <label>
+          <span class="title">Группа</span>
+          <input type="text" name="group_number" value="{{ student.group_number or '' }}">
+        </label>
+      </div>
       <label>
-        <span class="title">Навыки</span>
-        <input type="text" name="skills" value="{{ student.skills or '' }}" placeholder="через запятую">
+        <span class="title">Телефон</span>
+        <input type="text" name="phone" value="{{ student.phone or '' }}">
       </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Hard Skills (знаю)</span>
+          <input type="text" name="skills" value="{{ student.skills or '' }}" placeholder="через запятую">
+        </label>
+        <label>
+          <span class="title">Hard Skills (хочу изучить)</span>
+          <input type="text" name="skills_to_learn" value="{{ student.skills_to_learn or '' }}" placeholder="через запятую">
+        </label>
+      </div>
       <label>
-        <span class="title">Интересы</span>
+        <span class="title">Область интересов</span>
         <input type="text" name="interests" value="{{ student.interests or '' }}" placeholder="через запятую">
       </label>
       <label>
-        <span class="title">Ссылка на резюме</span>
-        <input type="text" name="cv" value="{{ student.cv or '' }}">
+        <span class="title">Чем заниматься не хотите</span>
+        <input type="text" name="dislikes" value="{{ student.dislikes or '' }}">
+      </label>
+      <label>
+        <span class="title">Коммерческий опыт</span>
+        <textarea name="commercial_experience" rows="2">{{ student.commercial_experience or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Некоммерческий/академический опыт</span>
+        <textarea name="noncommercial_experience" rows="2">{{ student.noncommercial_experience or '' }}</textarea>
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Портфолио / репозиторий</span>
+          <input type="text" name="portfolio" value="{{ student.portfolio or '' }}">
+        </label>
+        <label>
+          <span class="title">Ссылка на резюме</span>
+          <input type="text" name="cv" value="{{ student.cv or '' }}">
+        </label>
+      </div>
+      <label>
+        <span class="title">Достижения</span>
+        <textarea name="achievements" rows="3">{{ student.achievements or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Хобби и интересы</span>
+        <textarea name="hobbies" rows="2">{{ student.hobbies or '' }}</textarea>
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span class="title">Часы на проект</span>
+          <input type="number" name="hours_per_week" value="{{ student.hours_per_week or '' }}" min="0">
+        </label>
+        <label>
+          <span class="title">Желаемая роль</span>
+          <input type="text" name="team_role" value="{{ student.team_role or '' }}">
+        </label>
+      </div>
+      <label>
+        <span class="title">Что планирует сделать в LISA</span>
+        <textarea name="plan_for_lab" rows="3">{{ student.plan_for_lab or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Мотивационное письмо</span>
+        <textarea name="motivation_letter" rows="4">{{ student.motivation_letter or '' }}</textarea>
+      </label>
+      <label>
+        <span class="title">Выбранные тематики</span>
+        <textarea name="thematic_choice" rows="3">{{ student.thematic_choice or '' }}</textarea>
       </label>
       <div class="topic-actions">
         <button class="btn" type="submit">Сохранить</button>

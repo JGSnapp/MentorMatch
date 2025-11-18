@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 
 def _trimmed(text: Any, *, limit: int = 20000) -> str | None:
@@ -13,19 +13,49 @@ def _trimmed(text: Any, *, limit: int = 20000) -> str | None:
 
 
 def student_profile(raw: Mapping[str, Any]) -> Dict[str, Any]:
-    """Выполняет функцию student_profile."""
+    """Формирует полезные для LLM сведения о студенте."""
+
+    def _bool_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        return "да" if bool(value) else "нет"
+
     return {
-        "program": raw.get("program"),
+        "isu_number": raw.get("isu_number"),
+        "subdivision": raw.get("subdivision"),
+        "direction": raw.get("direction"),
+        "status": raw.get("status"),
+        "course": raw.get("course"),
+        "group_number": raw.get("group_number"),
+        "education_program": raw.get("education_program"),
+        "phone": raw.get("phone"),
         "skills": raw.get("skills"),
-        "interests": raw.get("interests"),
         "skills_to_learn": raw.get("skills_to_learn"),
-        "preferred_team_track": raw.get("preferred_team_track"),
-        "team_role": raw.get("team_role"),
-        "team_needs": raw.get("team_needs"),
+        "interests": _trimmed(raw.get("interests")),
+        "dislikes": _trimmed(raw.get("dislikes")),
+        "commercial_experience": _trimmed(raw.get("commercial_experience")),
+        "noncommercial_experience": _trimmed(raw.get("noncommercial_experience")),
+        "portfolio": raw.get("portfolio"),
+        "achievements": _trimmed(raw.get("achievements")),
+        "hobbies": _trimmed(raw.get("hobbies")),
+        "cv": _trimmed(raw.get("cv")),
         "dev_track": raw.get("dev_track"),
         "science_track": raw.get("science_track"),
         "startup_track": raw.get("startup_track"),
-        "cv": _trimmed(raw.get("cv")),
+        "customer_discovery_level": raw.get("customer_discovery_level"),
+        "sales_level": raw.get("sales_level"),
+        "tech_execution_level": raw.get("tech_execution_level"),
+        "data_analytics_level": raw.get("data_analytics_level"),
+        "marketing_design_level": raw.get("marketing_design_level"),
+        "finance_business_level": raw.get("finance_business_level"),
+        "team_leadership_level": raw.get("team_leadership_level"),
+        "apply_master": _bool_text(raw.get("apply_master")),
+        "hours_per_week": raw.get("hours_per_week"),
+        "thematic_choice": _trimmed(raw.get("thematic_choice")),
+        "team_role": raw.get("team_role"),
+        "plan_for_lab": _trimmed(raw.get("plan_for_lab")),
+        "motivation_letter": _trimmed(raw.get("motivation_letter")),
+        "police_clearance": raw.get("police_clearance"),
     }
 
 

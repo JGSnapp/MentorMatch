@@ -22,7 +22,8 @@ def _fetch_students(conn, offset: int, limit: int) -> Tuple[List[Dict[str, Any]]
         cur.execute(
             """
             SELECT u.id, u.full_name, u.username, u.email, u.created_at,
-                   sp.program, sp.skills, sp.interests
+                   sp.direction, sp.education_program, sp.skills, sp.skills_to_learn,
+                   sp.interests, sp.hours_per_week, sp.team_role
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE u.role = 'student'
