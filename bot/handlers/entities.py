@@ -63,6 +63,16 @@ class EntityHandlers(BaseHandlers):
         name = (role.get('name') or '').strip().lower()
         return bool(name) and name == MEMBER_ROLE_NAME
 
+    def _display_role_name(self, role_name: str, topic_title: Optional[str], viewer_role: Optional[str]) -> str:
+        """Возвращает человекочитаемое название роли с учётом роли пользователя."""
+
+        name = (role_name or '').strip()
+        viewer = (viewer_role or '').strip().lower()
+        if viewer == 'student' and name.lower() == MEMBER_ROLE_NAME:
+            topic_label = (topic_title or '').strip() or 'теме'
+            return f'Участник «{topic_label}»'
+        return name or '–'
+
     async def _prompt_student_field(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, target_message=None) -> None:
         """Запрашивает следующее поле профиля студента."""
         message = target_message or update.effective_message
@@ -222,6 +232,7 @@ class EntityHandlers(BaseHandlers):
         is_admin = self._is_admin(update)
         is_self = self._ids_equal(viewer_id, sid)
         can_edit = is_admin or is_self
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
 
         def _normalize_value(value: Optional[Any]) -> str:
             if value is None:
@@ -359,8 +370,9 @@ class EntityHandlers(BaseHandlers):
             if rec and 'role_name' in (rec[0] or {}):
                 lines.append('Рекомендованные роли:')
                 for it in rec:
-                    role_name = it.get('role_name') or f"Роль #{it.get('role_id')}"
+                    raw_role_name = it.get('role_name') or f"Роль #{it.get('role_id')}"
                     topic_title = it.get('topic_title') or 'без темы'
+                    role_name = self._display_role_name(raw_role_name, topic_title, viewer_role)
                     rank = it.get('rank') or '—'
                     score = it.get('score')
                     if isinstance(score, (int, float)):
@@ -661,6 +673,16 @@ class EntityHandlers(BaseHandlers):
             kb.append([InlineKeyboardButton(apply_text, callback_data=f'apply_topic_{tid}')])
         if is_admin:
             kb.append([InlineKeyboardButton('🧑‍🏫 Подобрать научного руководителя', callback_data=f'match_supervisor_{tid}')])
+        can_pick_topic_applicants = (viewer_role_name == 'supervisor' and same_author) or is_admin
+        if can_pick_topic_applicants:
+            kb.append(
+                [
+                    InlineKeyboardButton(
+                        '🎯 Подобрать заявки по теме',
+                        callback_data=f'match_topic_applicants_{tid}',
+                    )
+                ]
+            )
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text('\n'.join(lines2)), reply_markup=self._mk(kb))
 
@@ -679,7 +701,9 @@ class EntityHandlers(BaseHandlers):
 
         topic_id = role.get('topic_id')
         topic_title = role.get('topic_title') or (f'Тема #{topic_id}' if topic_id else '—')
-        role_name = (role.get('name') or '–').strip() or '–'
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        raw_role_name = (role.get('name') or '–').strip() or '–'
+        role_name = self._display_role_name(raw_role_name, topic_title, viewer_role)
         author_name = (role.get('author') or '–').strip() or '–'
         description = (role.get('description') or '–').strip()
         required_skills = (role.get('required_skills') or '–').strip() or '–'
@@ -721,13 +745,23 @@ class EntityHandlers(BaseHandlers):
 
         uid = context.user_data.get('uid')
         author_id = role.get('author_user_id')
-        viewer_role = self._normalize_role_value(context.user_data.get('role'))
         same_author = self._ids_equal(uid, author_id)
         is_admin = self._is_admin(update)
 
         if is_admin or same_author:
             kb.append([InlineKeyboardButton('✏️ Редактировать роль', callback_data=f'edit_role_{rid}')])
             kb.append([InlineKeyboardButton('👥 Подобрать студентов', callback_data=f'match_role_{rid}')])
+
+        can_pick_from_applications = (viewer_role == 'supervisor' and same_author) or is_admin
+        if can_pick_from_applications:
+            kb.append(
+                [
+                    InlineKeyboardButton(
+                        '🎯 Подобрать из заявок',
+                        callback_data=f'match_role_applicants_{rid}',
+                    )
+                ]
+            )
 
         can_apply = (
             viewer_role == 'student'
@@ -781,7 +815,8 @@ class EntityHandlers(BaseHandlers):
 
         topic_id = role.get('topic_id')
         topic_title = role.get('topic_title') or (f'Тема #{topic_id}' if topic_id else 'тема')
-        role_name = (role.get('name') or '').strip() or f'Роль #{rid}'
+        raw_role_name = (role.get('name') or '').strip() or f'Роль #{rid}'
+        role_name = self._display_role_name(raw_role_name, topic_title, viewer_role)
 
         default_body = (
             f'Здравствуйте! Хотел(а) бы присоединиться к роли "{role_name}" '
@@ -1021,6 +1056,7 @@ class EntityHandlers(BaseHandlers):
         viewer_id = context.user_data.get('uid')
         same_user = self._ids_equal(viewer_id, sid)
         is_admin = self._is_admin(update)
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
         res = await self._api_post('/match-student', data={'student_user_id': sid})
         if not res or res.get('status') != 'ok':
             await q.edit_message_text(self._fix_text('Ошибка подбора ролей для студента'))
@@ -1031,8 +1067,9 @@ class EntityHandlers(BaseHandlers):
         context.user_data['student_match_back'] = f'match_student_{sid}'
         for it in items:
             rank = it.get('rank')
-            role_name = (it.get('role_name') or '–').strip() or '–'
+            raw_role_name = (it.get('role_name') or '–').strip() or '–'
             topic_title = (it.get('topic_title') or '–').strip() or '–'
+            role_name = self._display_role_name(raw_role_name, topic_title, viewer_role)
             reason_raw = (it.get('reason') or '').strip()
             reason = ' '.join(reason_raw.split())
             rank_label = f"#{rank}" if rank else '#?'

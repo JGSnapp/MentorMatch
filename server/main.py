@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 logger.setLevel(LOG_LEVEL)
 
 MEMBER_ROLE_NAME = '%member'
+MEMBER_ROLE_DESCRIPTION = (
+    'Роль без конкретных обязанностей или специальности — для тех, кому интересен проект, '
+    'но он ещё не определился с ролью.'
+)
 
 STUDENT_PROFILE_TEXT_FIELDS = (
     'isu_number',
@@ -103,10 +107,10 @@ def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
     cur.execute(
         '''
         INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        VALUES (%s, %s, %s, NULL, NULL, now(), now())
         RETURNING id
         ''',
-        (topic_id, MEMBER_ROLE_NAME),
+        (topic_id, MEMBER_ROLE_NAME, MEMBER_ROLE_DESCRIPTION),
     )
     inserted = cur.fetchone()
     return inserted[0] if inserted else None
@@ -556,9 +560,21 @@ async def _startup_event():
             except Exception:
                 pass
             try:
-                cur.execute("ALTER TABLE roles ADD COLUMN IF NOT EXISTS approved_student_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL")
+                cur.execute("ALTER TABLE roles DROP COLUMN IF EXISTS approved_student_user_id")
             except Exception:
                 pass
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS approved_students (
+                  id BIGSERIAL PRIMARY KEY,
+                  student_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  role_id BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                  UNIQUE(role_id, student_id)
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_approved_students_role ON approved_students(role_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_approved_students_student ON approved_students(student_id)")
                             
             cur.execute(
                 '''
@@ -730,14 +746,16 @@ def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: 
                 EXISTS(
                     SELECT 1
                     FROM roles rs
-                    WHERE rs.topic_id = t.id AND rs.approved_student_user_id = %(uid)s
+                    JOIN approved_students aps ON aps.role_id = rs.id
+                    WHERE rs.topic_id = t.id AND aps.student_id = %(uid)s
                 ) AS is_approved_student,
                 COALESCE(
                     (
                         SELECT ARRAY_AGG(DISTINCT rs.name)
                         FROM roles rs
+                        JOIN approved_students aps ON aps.role_id = rs.id
                         WHERE rs.topic_id = t.id
-                          AND rs.approved_student_user_id = %(uid)s
+                          AND aps.student_id = %(uid)s
                           AND rs.name IS NOT NULL
                           AND rs.name <> ''
                           AND LOWER(rs.name) <> %(member_role_name)s
@@ -748,7 +766,8 @@ def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: 
                     (
                         SELECT ARRAY_AGG(DISTINCT rs.id)
                         FROM roles rs
-                        WHERE rs.topic_id = t.id AND rs.approved_student_user_id = %(uid)s
+                        JOIN approved_students aps ON aps.role_id = rs.id
+                        WHERE rs.topic_id = t.id AND aps.student_id = %(uid)s
                     ),
                     ARRAY[]::bigint[]
                 ) AS approved_role_ids
@@ -758,7 +777,8 @@ def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: 
                OR EXISTS (
                     SELECT 1
                     FROM roles r2
-                    WHERE r2.topic_id = t.id AND r2.approved_student_user_id = %(uid)s
+                    JOIN approved_students aps ON aps.role_id = r2.id
+                    WHERE r2.topic_id = t.id AND aps.student_id = %(uid)s
                )
             ORDER BY t.created_at DESC
             OFFSET %(offset)s LIMIT %(limit)s
@@ -1487,7 +1507,11 @@ def api_roles_stats():
             '''
             SELECT
                 COUNT(*)::INT AS total_roles,
-                COUNT(*) FILTER (WHERE r.approved_student_user_id IS NULL)::INT AS available_roles
+                COUNT(*) FILTER (
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM approved_students aps WHERE aps.role_id = r.id
+                    )
+                )::INT AS available_roles
             FROM roles r
             JOIN topics t ON t.id = r.topic_id
             WHERE t.is_active = TRUE
@@ -1504,7 +1528,19 @@ def api_get_role(role_id: int):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
-            SELECT r.*, t.title AS topic_title, t.author_user_id, u.full_name AS author
+            SELECT r.*, t.title AS topic_title, t.author_user_id, u.full_name AS author,
+                   COALESCE(
+                       (
+                           SELECT json_agg(
+                                      json_build_object('id', aps.student_id, 'full_name', stu.full_name)
+                                      ORDER BY stu.full_name
+                                  )
+                           FROM approved_students aps
+                           JOIN users stu ON stu.id = aps.student_id
+                           WHERE aps.role_id = r.id
+                       ),
+                       '[]'::json
+                   ) AS approved_students
             FROM roles r
             JOIN topics t ON t.id = r.topic_id
             JOIN users u ON u.id = t.author_user_id
@@ -1523,7 +1559,19 @@ def api_get_topic_roles(topic_id: int, limit: int = Query(50, ge=1, le=200), off
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             '''
-            SELECT r.*
+            SELECT r.*,
+                   COALESCE(
+                       (
+                           SELECT json_agg(
+                                      json_build_object('id', aps.student_id, 'full_name', stu.full_name)
+                                      ORDER BY stu.full_name
+                                  )
+                           FROM approved_students aps
+                           JOIN users stu ON stu.id = aps.student_id
+                           WHERE aps.role_id = r.id
+                       ),
+                       '[]'::json
+                   ) AS approved_students
             FROM roles r
             WHERE r.topic_id = %s
             ORDER BY r.created_at DESC
@@ -1675,12 +1723,7 @@ def _notify_application_update(message: Dict[str, Any], action: str) -> None:
         text = f"🚫 {sender_name} отменил(а) заявку по теме «{topic_label}»."
         if role_name:
             text += f"\nРоль: {role_name}"
-        _send_telegram_notification(
-            chat_id,
-            text,
-            button_text='Открыть заявку',
-            callback_data=f'message_{message_id}',
-        )
+        _send_telegram_notification(chat_id, text)
 
 
 @app.post('/api/messages/send', response_class=JSONResponse)
@@ -1708,7 +1751,8 @@ def api_messages_send(
                 '''
                 SELECT 1
                 FROM roles
-                WHERE topic_id = %s AND approved_student_user_id = %s
+                JOIN approved_students aps ON aps.role_id = roles.id
+                WHERE roles.topic_id = %s AND aps.student_id = %s
                 LIMIT 1
                 ''',
                 (int(topic_id), sender_user_id),
@@ -1822,6 +1866,7 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
         return {'status': 'error', 'message': 'invalid action'}
     notify_ctx: Optional[Dict[str, Any]] = None
     needs_export = False
+    delete_after_notify = False
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         msg = _fetch_message_context(cur, message_id)
         if not msg:
@@ -1846,7 +1891,11 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
                     approved_student_id = msg.get('sender_user_id')
                 if approved_student_id:
                     cur.execute(
-                        'UPDATE roles SET approved_student_user_id=%s WHERE id=%s',
+                        '''
+                        INSERT INTO approved_students(student_id, role_id)
+                        VALUES (%s, %s)
+                        ON CONFLICT (role_id, student_id) DO NOTHING
+                        ''',
                         (approved_student_id, msg.get('role_id')),
                     )
                     enqueue_refresh(conn, 'role', msg.get('role_id'))
@@ -1871,10 +1920,11 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
             actor_role_raw = msg.get('receiver_role') if act == 'reject' else msg.get('sender_role')
             actor_role = (actor_role_raw or '').strip().lower()
             if msg.get('role_id') and actor_role == 'student' and actor_id:
-                cur.execute('SELECT approved_student_user_id FROM roles WHERE id=%s', (msg.get('role_id'),))
-                row = cur.fetchone()
-                if row and row.get('approved_student_user_id') == actor_id:
-                    cur.execute('UPDATE roles SET approved_student_user_id=NULL WHERE id=%s', (msg.get('role_id'),))
+                cur.execute(
+                    'DELETE FROM approved_students WHERE role_id=%s AND student_id=%s',
+                    (msg.get('role_id'), actor_id),
+                )
+                if cur.rowcount:
                     enqueue_refresh(conn, 'role', msg.get('role_id'))
                     needs_export = True
             elif not msg.get('role_id') and actor_role == 'supervisor' and actor_id:
@@ -1884,30 +1934,52 @@ def api_messages_respond(message_id: int = Form(...), responder_user_id: int = F
                     cur.execute('UPDATE topics SET approved_supervisor_user_id=NULL WHERE id=%s', (msg.get('topic_id'),))
                     enqueue_refresh(conn, 'topic', msg.get('topic_id'))
                     needs_export = True
+            if act == 'cancel':
+                delete_after_notify = True
         commit_with_refresh(conn)
         msg['status'] = status
         msg['answer'] = answer or None
         notify_ctx = msg
     if notify_ctx:
         _notify_application_update(notify_ctx, act)
+    if delete_after_notify:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute('DELETE FROM messages WHERE id=%s', (message_id,))
+            commit_with_refresh(conn)
     if needs_export:
         _sync_roles_sheet()
     return {'status': 'ok'}
 
 
 @app.post('/api/roles/{role_id}/clear-approved', response_class=JSONResponse)
-def api_clear_role_approved(role_id: int, by_user_id: int = Form(...)):
-    """Выполняет функцию api_clear_role_approved."""
+def api_clear_role_approved(role_id: int, by_user_id: int = Form(...), student_id: Optional[int] = Form(None)):
+    """Удаляет утверждение по роли для конкретного студента (по умолчанию — для инициатора)."""
+    target_student_id = student_id if student_id is not None else by_user_id
+    if target_student_id is None:
+        return {'status': 'error', 'message': 'student_id is required'}
     with get_conn() as conn, conn.cursor() as cur:
-                                                                
-        cur.execute('SELECT r.approved_student_user_id, t.author_user_id FROM roles r JOIN topics t ON t.id = r.topic_id WHERE r.id=%s', (role_id,))
+        cur.execute(
+            '''
+            SELECT t.author_user_id
+            FROM roles r
+            JOIN topics t ON t.id = r.topic_id
+            WHERE r.id=%s
+            ''',
+            (role_id,),
+        )
         row = cur.fetchone()
         if not row:
             return {'status': 'error', 'message': 'role not found'}
-        approved_student_id, author_id = row
-        if (approved_student_id is None) or (by_user_id not in (approved_student_id, author_id)):
+        author_id = row[0]
+        cur.execute(
+            'DELETE FROM approved_students WHERE role_id=%s AND student_id=%s',
+            (role_id, target_student_id),
+        )
+        if cur.rowcount == 0:
+            return {'status': 'error', 'message': 'not allowed or not approved'}
+        if by_user_id not in (target_student_id, author_id):
+            conn.rollback()
             return {'status': 'error', 'message': 'not allowed'}
-        cur.execute('UPDATE roles SET approved_student_user_id=NULL WHERE id=%s', (role_id,))
         enqueue_refresh(conn, 'role', role_id)
         commit_with_refresh(conn)
     _sync_roles_sheet()

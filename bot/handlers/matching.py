@@ -224,6 +224,110 @@ class MatchingHandlers(BaseHandlers):
         kb.append([InlineKeyboardButton("⬅️ К роли", callback_data=f"role_{rid}")])
         await q.edit_message_text(self._fix_text("\n".join(lines)), reply_markup=self._mk(kb))
 
+    async def cb_match_role_applicants(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Отбирает лучших студентов среди откликнувшихся на роль."""
+
+        q = update.callback_query
+        await self._answer_callback(q)
+        try:
+            rid = int(q.data.rsplit("_", 1)[1])
+        except Exception:
+            await q.edit_message_text(self._fix_text("Некорректный идентификатор роли."))
+            return
+
+        res = await self._api_post("/match-role-applicants", data={"role_id": rid})
+        if not res or res.get("status") not in ("ok", "success"):
+            await q.edit_message_text(
+                self._fix_text("Не удалось подобрать кандидатов из заявок")
+            )
+            return
+
+        items = res.get("items", [])
+        max_items = min(len(items), 10) if items else 10
+        lines = [f"Топ‑{max_items} откликов для роли #{rid}:"]
+        kb: List[List[InlineKeyboardButton]] = []
+        for item in items[:max_items]:
+            rank = item.get("rank")
+            full_name = (item.get("full_name") or "–").strip() or "–"
+            reason = (item.get("reason") or "").strip()
+            rank_label = f"#{rank}" if rank else "#?"
+            reason_suffix = f" — {reason}" if reason else ""
+            lines.append(f"{rank_label}. {full_name}{reason_suffix}")
+            student_id = item.get("user_id")
+            if student_id:
+                button_title = (
+                    f"👤 {full_name[:40]}" if full_name and full_name != "–" else "👤 Студент"
+                )
+                kb.append(
+                    [
+                        InlineKeyboardButton(
+                            self._fix_text(button_title),
+                            callback_data=f"student_{student_id}",
+                        )
+                    ]
+                )
+
+        if not kb:
+            lines.append("— подходящих заявок не найдено —")
+
+        kb.append([InlineKeyboardButton("⬅️ К роли", callback_data=f"role_{rid}")])
+        await q.edit_message_text(self._fix_text("\n".join(lines)), reply_markup=self._mk(kb))
+
+    async def cb_match_topic_applicants(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Отбирает лучших студентов среди откликнувшихся на тему."""
+
+        q = update.callback_query
+        await self._answer_callback(q)
+        try:
+            tid = int(q.data.rsplit("_", 1)[1])
+        except Exception:
+            await q.edit_message_text(self._fix_text("Некорректный идентификатор темы."))
+            return
+
+        res = await self._api_post(
+            "/match-topic-applicants", data={"topic_id": tid}
+        )
+        if not res or res.get("status") not in ("ok", "success"):
+            await q.edit_message_text(
+                self._fix_text("Не удалось подобрать кандидатов из заявок")
+            )
+            return
+
+        items = res.get("items", [])
+        max_items = min(len(items), 10) if items else 10
+        lines = [f"Топ‑{max_items} заявок для темы #{tid}:"]
+        kb: List[List[InlineKeyboardButton]] = []
+        for item in items[:max_items]:
+            rank = item.get("rank")
+            full_name = (item.get("full_name") or "–").strip() or "–"
+            reason = (item.get("reason") or "").strip()
+            rank_label = f"#{rank}" if rank else "#?"
+            reason_suffix = f" — {reason}" if reason else ""
+            lines.append(f"{rank_label}. {full_name}{reason_suffix}")
+            student_id = item.get("user_id")
+            if student_id:
+                button_title = (
+                    f"👤 {full_name[:40]}" if full_name and full_name != "–" else "👤 Студент"
+                )
+                kb.append(
+                    [
+                        InlineKeyboardButton(
+                            self._fix_text(button_title),
+                            callback_data=f"student_{student_id}",
+                        )
+                    ]
+                )
+
+        if not kb:
+            lines.append("— подходящих заявок не найдено —")
+
+        kb.append([InlineKeyboardButton("⬅️ К теме", callback_data=f"topic_{tid}")])
+        await q.edit_message_text(self._fix_text("\n".join(lines)), reply_markup=self._mk(kb))
+
     async def cb_match_topics_for_supervisor(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):

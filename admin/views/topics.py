@@ -13,6 +13,10 @@ from ..embedding_queue import enqueue_refresh, commit_with_refresh
 from ..utils_common import parse_optional_int
 
 MEMBER_ROLE_NAME = '%member'
+MEMBER_ROLE_DESCRIPTION = (
+    'Роль без конкретных обязанностей или специальности — для тех, кому интересен проект, '
+    'но он ещё не определился с ролью.'
+)
 
 
 def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
@@ -27,10 +31,10 @@ def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
     cur.execute(
         '''
         INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        VALUES (%s, %s, %s, NULL, NULL, now(), now())
         RETURNING id
         ''',
-        (topic_id, MEMBER_ROLE_NAME),
+        (topic_id, MEMBER_ROLE_NAME, MEMBER_ROLE_DESCRIPTION),
     )
     inserted = cur.fetchone()
     return inserted[0] if inserted else None
@@ -234,10 +238,31 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 return RedirectResponse(url=f'/?tab=topics&msg={notice}', status_code=303)
             topic = dict(topic)
             cur.execute(
-                'SELECT * FROM roles WHERE topic_id=%s ORDER BY created_at DESC, id DESC',
+                '''
+                SELECT r.*,
+                       COALESCE(
+                           json_agg(
+                               json_build_object('id', aps.student_id, 'full_name', u.full_name)
+                               ORDER BY u.full_name
+                           ) FILTER (WHERE aps.student_id IS NOT NULL),
+                           '[]'::json
+                       ) AS approved_students
+                FROM roles r
+                LEFT JOIN approved_students aps ON aps.role_id = r.id
+                LEFT JOIN users u ON u.id = aps.student_id
+                WHERE r.topic_id=%s
+                GROUP BY r.id
+                ORDER BY r.created_at DESC, r.id DESC
+                ''',
                 (topic_id,),
             )
             roles = [dict(r) for r in cur.fetchall()]
+            for role in roles:
+                approved_raw = role.get('approved_students')
+                if isinstance(approved_raw, list):
+                    role['approved_students'] = approved_raw
+                else:
+                    role['approved_students'] = []
             cur.execute(
                 '''
                 SELECT tc.rank, tc.score,
@@ -400,15 +425,25 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
 
     @router.get('/role/{role_id}', response_class=HTMLResponse)
     def view_role(request: Request, role_id: int, msg: Optional[str] = None):
-        """Показывает информацию о роли и рекомендованных кандидатах."""
+        """Показывает информацию о роли, утверждённых студентах и кандидатах."""
         with ctx.get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 '''
-                SELECT r.*, t.title AS topic_title, t.author_user_id, u.full_name AS author
+                SELECT r.*, t.title AS topic_title, t.author_user_id, u.full_name AS author,
+                       COALESCE(
+                           json_agg(
+                               json_build_object('id', aps.student_id, 'full_name', su.full_name)
+                               ORDER BY su.full_name
+                           ) FILTER (WHERE aps.student_id IS NOT NULL),
+                           '[]'::json
+                       ) AS approved_students
                 FROM roles r
                 JOIN topics t ON t.id = r.topic_id
                 JOIN users u ON u.id = t.author_user_id
+                LEFT JOIN approved_students aps ON aps.role_id = r.id
+                LEFT JOIN users su ON su.id = aps.student_id
                 WHERE r.id = %s
+                GROUP BY r.id, t.title, t.author_user_id, u.full_name
                 ''',
                 (role_id,),
             )
@@ -416,6 +451,13 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
             if not role:
                 notice = urllib.parse.quote('Роль не найдена')
                 return RedirectResponse(url=f'/?tab=topics&msg={notice}', status_code=303)
+            role_data = dict(role)
+            approved_raw = role_data.get('approved_students')
+            role_data['approved_students'] = approved_raw if isinstance(approved_raw, list) else []
+            cur.execute(
+                "SELECT id, full_name FROM users WHERE role='student' ORDER BY full_name ASC",
+            )
+            all_students = [dict(r) for r in cur.fetchall()]
             cur.execute(
                 '''
                 SELECT rc.user_id, u.full_name, u.username, rc.score, rc.rank
@@ -432,8 +474,9 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
             'admin/view_role.html',
             {
                 'request': request,
-                'role': dict(role),
+                'role': role_data,
                 'candidates': [dict(r) for r in cands],
+                'all_students': all_students,
                 'msg': msg,
             },
         )

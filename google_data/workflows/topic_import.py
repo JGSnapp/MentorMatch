@@ -18,6 +18,10 @@ from ..utils.topic_extraction import extract_topics_from_text, fallback_extract_
 logger = logging.getLogger(__name__)
 
 MEMBER_ROLE_NAME = '%member'
+MEMBER_ROLE_DESCRIPTION = (
+    'Роль без конкретных обязанностей или специальности — для тех, кому интересен проект, '
+    'но он ещё не определился с ролью.'
+)
 
 
 def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
@@ -32,10 +36,10 @@ def _ensure_member_role(cur, topic_id: int) -> Optional[int]:
     cur.execute(
         '''
         INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-        VALUES (%s, %s, NULL, NULL, NULL, now(), now())
+        VALUES (%s, %s, %s, NULL, NULL, now(), now())
         RETURNING id
         ''',
-        (topic_id, MEMBER_ROLE_NAME),
+        (topic_id, MEMBER_ROLE_NAME, MEMBER_ROLE_DESCRIPTION),
     )
     inserted = cur.fetchone()
     return inserted[0] if inserted else None
@@ -123,17 +127,13 @@ def import_students(
                 continue
             needs_student_refresh = False
 
+            existing = None
             if email:
                 cur.execute(
                     "SELECT id FROM users WHERE LOWER(email)=LOWER(%s) AND role='student' LIMIT 1",
                     (email,),
                 )
-            else:
-                cur.execute(
-                    "SELECT id FROM users WHERE full_name=%s AND role='student' LIMIT 1",
-                    (full_name,),
-                )
-            existing = cur.fetchone()
+                existing = cur.fetchone()
             if existing:
                 user_id = existing[0]
             else:

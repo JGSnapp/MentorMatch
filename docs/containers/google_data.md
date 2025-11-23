@@ -19,6 +19,11 @@
   - `topic_extraction.py` использует LLM или резервные алгоритмы для выделения тем из текстов анкет.【F:google_data/utils/topic_extraction.py†L1-L120】
   - `cv.py`, `text_extract.py`, `utils.py` содержат парсеры и преобразователи данных форм Google, переиспользуемые в workflow импорта.【F:google_data/utils/cv.py†L1-L44】【F:google_data/utils/text_extract.py†L1-L68】【F:google_data/utils/utils.py†L1-L24】
 
+## Как работает импорт студентов
+- При каждом запуске импорт забирает все строки выбранного листа через `get_all_values()` и нормализует их в `fetch_normalized_rows()`: инкрементальной загрузки нет.【F:google_data/utils/parse_gform.py†L317-L342】
+- Каждая непустая строка ищется в БД по email (без учёта регистра); если email отсутствует, создаётся новый пользователь даже при совпадении ФИО, чтобы не перезаписывать чужой профиль. При совпадении email переиспользуется существующий `user_id`, иначе создаётся новая запись пользователя.【F:google_data/workflows/topic_import.py†L57-L86】
+- Профиль студента сохраняется через `INSERT ... ON CONFLICT (user_id) DO UPDATE`, поэтому новая строка перезапишет поля профиля найденного пользователя; в противном случае профиль создаётся с нуля.【F:google_data/workflows/topic_import.py†L116-L148】
+
 ## Ключевые функции
 - `_configure_logging()` — читает уровень логирования из окружения и настраивает общий формат сообщений сервиса.【F:google_data/main.py†L18-L28】
 - `export_pairs()` — HTTP POST обработчик, который определяет ID таблицы, вызывает `sync_roles_sheet()` и возвращает статус операции клиенту.【F:google_data/main.py†L41-L69】

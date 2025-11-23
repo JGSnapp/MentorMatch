@@ -123,6 +123,8 @@ def build_role_candidates_payload(
     topic: Mapping[str, Any],
     role_row: Mapping[str, Any],
     candidates: Iterable[Mapping[str, Any]],
+    *,
+    top_n: int = 5,
 ) -> Dict[str, Any]:
     """Выполняет функцию build_role_candidates_payload."""
     comp = []
@@ -165,7 +167,41 @@ def build_role_candidates_payload(
         "topic": topic_compact,
         "role": role_compact,
         "candidates": comp,
-        "instruction": "Подбери пять лучших студентов на роль и напиши, почему они подходят.",
+        "instruction": (
+            f"Подбери {top_n} лучших студентов на роль и напиши, почему они подходят."
+        ),
+    }
+
+
+def build_topic_applicants_payload(
+    topic: Mapping[str, Any],
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    top_n: int = 10,
+) -> Dict[str, Any]:
+    """Формирует payload для отбора студентов среди заявок на тему."""
+
+    comp = []
+    for idx, candidate in enumerate(candidates, start=1):
+        comp.append(
+            {
+                "num": idx,
+                "user_id": candidate.get("user_id"),
+                "full_name": candidate.get("full_name"),
+                "username": candidate.get("username"),
+                "email": candidate.get("email"),
+                "original_score": candidate.get("score"),
+                "profile": student_profile(candidate),
+            }
+        )
+
+    return {
+        "task": "rank_applicants_for_topic",
+        "topic": _compact_topic(topic),
+        "candidates": comp,
+        "instruction": (
+            f"Выбери {top_n} лучших студентов из откликов на тему и поясни, почему они подходят."
+        ),
     }
 
 

@@ -67,6 +67,18 @@ def match_role(role_id: int) -> Dict[str, Any]:
     return _post('/api/match/role', {'role_id': role_id})
 
 
+def match_role_applicants(role_id: int) -> Dict[str, Any]:
+    """Запрашивает сортировку откликов на роль."""
+
+    return _post('/api/match/role-applicants', {'role_id': role_id})
+
+
+def match_topic_applicants(topic_id: int) -> Dict[str, Any]:
+    """Запрашивает сортировку откликов на тему."""
+
+    return _post('/api/match/topic-applicants', {'topic_id': topic_id})
+
+
 def match_student(student_user_id: int) -> Dict[str, Any]:
     """Инициирует подбор наставника для студента по его идентификатору."""
     return _post('/api/match/student', {'user_id': student_user_id})
@@ -84,6 +96,8 @@ __all__ = [
     'refresh_role_embedding',
     'match_topic',
     'match_role',
+    'match_role_applicants',
+    'match_topic_applicants',
     'match_student',
     'match_supervisor',
 ]

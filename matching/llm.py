@@ -32,6 +32,7 @@ class MatchingLLMClient:
         user_prompt: str,
         schema: Dict[str, Any],
         parser: ItemParser,
+        expected_count: int = 5,
     ) -> Optional[List[ParsedItem]]:
         """Выполняет функцию _call_rank."""
         functions = [
@@ -74,7 +75,7 @@ class MatchingLLMClient:
 
         raw_items = parsed.get("top", []) if isinstance(parsed, dict) else []
         items: List[ParsedItem] = []
-        for raw in raw_items[:5]:
+        for raw in raw_items[:expected_count]:
             if not isinstance(raw, dict):
                 continue
             parsed_item = parser(raw)
@@ -82,10 +83,13 @@ class MatchingLLMClient:
                 continue
             items.append(parsed_item)
 
-        return items if len(items) == 5 else None
+        return items if len(items) == expected_count else None
 
-    def rank_candidates(self, payload_json: str) -> Optional[List[ParsedItem]]:
+    def rank_candidates(
+        self, payload_json: str, *, expected_count: int = 5
+    ) -> Optional[List[ParsedItem]]:
         """Выполняет функцию rank_candidates."""
+        expected_count = max(1, expected_count)
         schema = {
             "type": "object",
             "properties": {
@@ -100,8 +104,8 @@ class MatchingLLMClient:
                         },
                         "required": ["user_id", "num", "reason"],
                     },
-                    "minItems": 5,
-                    "maxItems": 5,
+                    "minItems": expected_count,
+                    "maxItems": expected_count,
                 }
             },
             "required": ["top"],
@@ -120,22 +124,26 @@ class MatchingLLMClient:
 
         return self._call_rank(
             function_name="rank_candidates",
-            description="Верни пять кандидатов с краткими пояснениями.",
+            description=(
+                f"Верни {expected_count} кандидатов с краткими пояснениями."
+            ),
             system_prompt=(
-                "Ты ассистент, который подбирает людей к темам. Отвечай по-русски и"
-                " используй функцию только с пятью элементами."
+                "Ты ассистент, который подбирает людей к темам. Отвечай по-русски"
+                f" и используй функцию только с {expected_count} элементами."
             ),
             user_prompt=(
                 "Входные данные (JSON):\n"
                 f"{payload_json}\n\n"
-                "Вызови функцию rank_candidates и передай пять лучших вариантов."
+                f"Вызови функцию rank_candidates и передай {expected_count} лучших вариантов."
             ),
             schema=schema,
             parser=_parse,
+            expected_count=expected_count,
         )
 
     def rank_topics(self, payload_json: str) -> Optional[List[ParsedItem]]:
         """Выполняет функцию rank_topics."""
+        expected_count = 5
         schema = {
             "type": "object",
             "properties": {
@@ -150,8 +158,8 @@ class MatchingLLMClient:
                         },
                         "required": ["topic_id", "num", "reason"],
                     },
-                    "minItems": 5,
-                    "maxItems": 5,
+                    "minItems": expected_count,
+                    "maxItems": expected_count,
                 }
             },
             "required": ["top"],
@@ -170,22 +178,24 @@ class MatchingLLMClient:
 
         return self._call_rank(
             function_name="rank_topics",
-            description="Предложи пять тем и объясни выбор.",
+            description=f"Предложи {expected_count} тем и объясни выбор.",
             system_prompt=(
                 "Ты помогаешь студенту выбрать темы. Всегда отвечай по-русски и"
-                " вызывай функцию только с пятью элементами."
+                f" вызывай функцию только с {expected_count} элементами."
             ),
             user_prompt=(
                 "Входные данные (JSON):\n"
                 f"{payload_json}\n\n"
-                "Вызови функцию rank_topics и передай пять лучших вариантов."
+                f"Вызови функцию rank_topics и передай {expected_count} лучших вариантов."
             ),
             schema=schema,
             parser=_parse,
+            expected_count=expected_count,
         )
 
     def rank_roles(self, payload_json: str) -> Optional[List[ParsedItem]]:
         """Выполняет функцию rank_roles."""
+        expected_count = 5
         schema = {
             "type": "object",
             "properties": {
@@ -200,8 +210,8 @@ class MatchingLLMClient:
                         },
                         "required": ["role_id", "num", "reason"],
                     },
-                    "minItems": 5,
-                    "maxItems": 5,
+                    "minItems": expected_count,
+                    "maxItems": expected_count,
                 }
             },
             "required": ["top"],
@@ -220,18 +230,138 @@ class MatchingLLMClient:
 
         return self._call_rank(
             function_name="rank_roles",
-            description="Выбери пять ролей для студента и добавь пояснения.",
+            description=(
+                f"Выбери {expected_count} ролей для студента и добавь пояснения."
+            ),
             system_prompt=(
                 "Ты ассистент, который помогает студенту подобрать роли."
-                " Отвечай на русском и возвращай пять элементов через функцию."
+                f" Отвечай на русском и возвращай {expected_count} элементов через функцию."
             ),
             user_prompt=(
                 "Входные данные (JSON):\n"
                 f"{payload_json}\n\n"
-                "Вызови функцию rank_roles и передай пять лучших вариантов."
+                f"Вызови функцию rank_roles и передай {expected_count} лучших вариантов."
             ),
             schema=schema,
             parser=_parse,
+            expected_count=expected_count,
+        )
+
+    def rank_role_applicants(
+        self, payload_json: str, *, top_n: int = 10
+    ) -> Optional[List[ParsedItem]]:
+        """Сортирует отклики на роль и возвращает топ кандидатов."""
+
+        expected_count = max(1, top_n)
+        schema = {
+            "type": "object",
+            "properties": {
+                "top": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "integer"},
+                            "num": {"type": "integer"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["user_id", "num", "reason"],
+                    },
+                    "minItems": expected_count,
+                    "maxItems": expected_count,
+                }
+            },
+            "required": ["top"],
+        }
+
+        def _parse(raw: Dict[str, Any]) -> Optional[ParsedItem]:
+            """Выполняет функцию _parse."""
+            try:
+                return {
+                    "user_id": int(raw.get("user_id")),
+                    "num": int(raw.get("num")),
+                    "reason": str(raw.get("reason") or ""),
+                }
+            except Exception:
+                return None
+
+        return self._call_rank(
+            function_name="rank_applicants",
+            description=(
+                f"Выбери {expected_count} кандидатов из откликов на роль и"
+                " объясни выбор."
+            ),
+            system_prompt=(
+                "Ты ассистент, который помогает руководителю выбрать студента из"
+                f" существующих откликов. Отвечай по-русски и возвращай {expected_count}"
+                " элементов через функцию."
+            ),
+            user_prompt=(
+                "Входные данные (JSON):\n"
+                f"{payload_json}\n\n"
+                f"Вызови функцию rank_applicants и передай {expected_count} лучших вариантов."
+            ),
+            schema=schema,
+            parser=_parse,
+            expected_count=expected_count,
+        )
+
+    def rank_topic_applicants(
+        self, payload_json: str, *, top_n: int = 10
+    ) -> Optional[List[ParsedItem]]:
+        """Сортирует отклики на тему и возвращает топ кандидатов."""
+
+        expected_count = max(1, top_n)
+        schema = {
+            "type": "object",
+            "properties": {
+                "top": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "integer"},
+                            "num": {"type": "integer"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["user_id", "num", "reason"],
+                    },
+                    "minItems": expected_count,
+                    "maxItems": expected_count,
+                }
+            },
+            "required": ["top"],
+        }
+
+        def _parse(raw: Dict[str, Any]) -> Optional[ParsedItem]:
+            """Выполняет функцию _parse."""
+            try:
+                return {
+                    "user_id": int(raw.get("user_id")),
+                    "num": int(raw.get("num")),
+                    "reason": str(raw.get("reason") or ""),
+                }
+            except Exception:
+                return None
+
+        return self._call_rank(
+            function_name="rank_topic_applicants",
+            description=(
+                f"Выбери {expected_count} кандидатов из откликов на тему и"
+                " объясни выбор."
+            ),
+            system_prompt=(
+                "Ты помогаешь руководителю выбрать студента из откликов на тему."
+                f" Отвечай по-русски и возвращай {expected_count} элементов через функцию."
+            ),
+            user_prompt=(
+                "Входные данные (JSON):\n"
+                f"{payload_json}\n\n"
+                f"Вызови функцию rank_topic_applicants и передай {expected_count} лучших вариантов."
+            ),
+            schema=schema,
+            parser=_parse,
+            expected_count=expected_count,
         )
 
 

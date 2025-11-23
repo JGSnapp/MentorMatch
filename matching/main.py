@@ -19,6 +19,8 @@ from .embeddings import (
 from .service import (
     handle_match,
     handle_match_role,
+    handle_match_role_applicants,
+    handle_match_topic_applicants,
     handle_match_student,
     handle_match_supervisor_user,
 )
@@ -72,6 +74,10 @@ class RoleMatchPayload(BaseModel):
 
 class UserMatchPayload(BaseModel):
     user_id: int
+
+
+class TopicApplicantsPayload(BaseModel):
+    topic_id: int
 
 
 def _model_args(model_repo_id: Optional[str]) -> dict[str, object]:
@@ -168,6 +174,34 @@ def match_role(payload: RoleMatchPayload) -> JSONResponse:
     llm = _llm_client()
     with get_conn() as conn:
         result = handle_match_role(conn, role_id=payload.role_id, llm_client=llm)
+    if result.get("status") != "ok":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return JSONResponse(result)
+
+
+@app.post("/api/match/role-applicants", response_class=JSONResponse)
+def match_role_applicants(payload: RoleMatchPayload) -> JSONResponse:
+    """Отбирает лучших студентов среди подавших заявки."""
+
+    llm = _llm_client()
+    with get_conn() as conn:
+        result = handle_match_role_applicants(
+            conn, role_id=payload.role_id, llm_client=llm
+        )
+    if result.get("status") != "ok":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return JSONResponse(result)
+
+
+@app.post("/api/match/topic-applicants", response_class=JSONResponse)
+def match_topic_applicants(payload: TopicApplicantsPayload) -> JSONResponse:
+    """Отбирает лучших студентов среди подавших заявки на тему."""
+
+    llm = _llm_client()
+    with get_conn() as conn:
+        result = handle_match_topic_applicants(
+            conn, topic_id=payload.topic_id, llm_client=llm
+        )
     if result.get("status") != "ok":
         raise HTTPException(status_code=404, detail=result.get("message"))
     return JSONResponse(result)

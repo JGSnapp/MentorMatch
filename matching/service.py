@@ -12,6 +12,7 @@ from .llm import MatchingLLMClient, create_matching_llm_client
 from .payloads import (
     build_candidates_payload,
     build_role_candidates_payload,
+    build_topic_applicants_payload,
     build_roles_for_student_payload,
     build_topics_for_supervisor_payload,
     dumps as dumps_payload,
@@ -20,6 +21,8 @@ from .repository import (
     STUDENT_PROFILE_COLUMNS_SQL,
     fetch_candidates,
     fetch_role,
+    fetch_role_applicants,
+    fetch_topic_applicants,
     fetch_roles_needing_students,
     fetch_student,
     fetch_supervisor,
@@ -50,6 +53,21 @@ def _fallback_top5(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "reason": "LLM недоступен: выводим последних пяти кандидатов.",
         }
         for idx, candidate in enumerate(candidates[:5], start=1)
+    ]
+
+
+def _fallback_top_n(
+    candidates: List[Dict[str, Any]], count: int, reason: str
+) -> List[Dict[str, Any]]:
+    """Возвращает верхние N кандидатов, если LLM недоступен."""
+
+    return [
+        {
+            "user_id": candidate.get("user_id"),
+            "num": idx,
+            "reason": reason,
+        }
+        for idx, candidate in enumerate(candidates[:count], start=1)
     ]
 
 
@@ -245,6 +263,117 @@ def handle_match_role(
     return {"status": "ok", "role_id": role_id, "items": items}
 
 
+def handle_match_role_applicants(
+    conn: connection,
+    role_id: int,
+    *,
+    llm_client: Optional[MatchingLLMClient] = None,
+    top_n: int = 10,
+) -> Dict[str, Any]:
+    """Отбирает лучших студентов из поданных заявок на роль."""
+
+    role_row = fetch_role(conn, role_id)
+    if not role_row:
+        return {"status": "error", "message": f"Role #{role_id} not found"}
+
+    topic = role_row.get("topic") or fetch_topic(conn, role_row.get("topic_id"))
+    applicants = fetch_role_applicants(conn, role_id, limit=100)
+    if not applicants:
+        return {"status": "ok", "role_id": role_id, "items": []}
+
+    _enrich_cv(conn, applicants)
+    top_n = max(1, min(top_n, len(applicants)))
+    ranked = _fallback_top_n(
+        applicants,
+        top_n,
+        "LLM недоступен: показываем ближайших по откликам.",
+    )
+
+    payload_json = dumps_payload(
+        build_role_candidates_payload(topic or {}, role_row, applicants, top_n=top_n)
+    )
+    llm = _pick_llm(llm_client)
+    if llm:
+        ranked = llm.rank_role_applicants(payload_json, top_n=top_n) or ranked
+
+    by_id = {c.get("user_id"): c for c in applicants}
+    items: List[Dict[str, Any]] = []
+    for position, result in enumerate(ranked, start=1):
+        candidate = by_id.get(result.get("user_id"))
+        if not candidate and isinstance(result.get("num"), int):
+            idx = result["num"] - 1
+            if 0 <= idx < len(applicants):
+                candidate = applicants[idx]
+        if not candidate:
+            continue
+        items.append(
+            {
+                "rank": position,
+                "user_id": candidate.get("user_id"),
+                "full_name": candidate.get("full_name"),
+                "reason": result.get("reason"),
+                "original_score": candidate.get("score"),
+            }
+        )
+
+    return {"status": "ok", "role_id": role_id, "items": items}
+
+
+def handle_match_topic_applicants(
+    conn: connection,
+    topic_id: int,
+    *,
+    llm_client: Optional[MatchingLLMClient] = None,
+    top_n: int = 10,
+) -> Dict[str, Any]:
+    """Отбирает лучших студентов среди откликнувшихся на тему."""
+
+    topic = fetch_topic(conn, topic_id)
+    if not topic:
+        return {"status": "error", "message": f"Topic #{topic_id} not found"}
+
+    applicants = fetch_topic_applicants(conn, topic_id, limit=100)
+    if not applicants:
+        return {"status": "ok", "topic_id": topic_id, "items": []}
+
+    _enrich_cv(conn, applicants)
+    top_n = max(1, min(top_n, len(applicants)))
+    ranked = _fallback_top_n(
+        applicants,
+        top_n,
+        "LLM недоступен: показываем ближайших по откликам.",
+    )
+
+    payload_json = dumps_payload(
+        build_topic_applicants_payload(topic, applicants, top_n=top_n)
+    )
+    llm = _pick_llm(llm_client)
+    if llm:
+        ranked = llm.rank_topic_applicants(payload_json, top_n=top_n) or ranked
+
+    by_id = {c.get("user_id"): c for c in applicants}
+    items: List[Dict[str, Any]] = []
+    for position, result in enumerate(ranked, start=1):
+        candidate = by_id.get(result.get("user_id"))
+        if not candidate and isinstance(result.get("num"), int):
+            idx = result["num"] - 1
+            if 0 <= idx < len(applicants):
+                candidate = applicants[idx]
+        if not candidate:
+            continue
+        items.append(
+            {
+                "rank": position,
+                "user_id": candidate.get("user_id"),
+                "full_name": candidate.get("full_name"),
+                "reason": result.get("reason"),
+                "original_score": candidate.get("score"),
+            }
+        )
+
+    return {"status": "ok", "topic_id": topic_id, "items": items}
+
+
 def handle_match_student(
     conn: connection,
     student_user_id: int,
@@ -389,6 +518,8 @@ def handle_match_supervisor_user(
 __all__ = [
     "handle_match",
     "handle_match_role",
+    "handle_match_role_applicants",
+    "handle_match_topic_applicants",
     "handle_match_student",
     "handle_match_supervisor_user",
     "create_matching_llm_client",

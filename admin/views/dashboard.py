@@ -82,8 +82,16 @@ def _fetch_role_topics(conn, topic_ids: Optional[Sequence[int]] = None) -> List[
             SELECT r.id AS role_id,
                    r.name AS role_name,
                    t.id AS topic_id,
-                   r.approved_student_user_id,
-                   stu.full_name AS approved_student_name,
+                   COALESCE(
+                       json_agg(
+                           json_build_object(
+                               'student_id', aps.student_id,
+                               'full_name', stu.full_name
+                           )
+                           ORDER BY stu.full_name
+                       ) FILTER (WHERE aps.student_id IS NOT NULL),
+                       '[]'::json
+                   ) AS approved_students,
                    t.title AS topic_title,
                    t.author_user_id,
                    author.full_name AS author_name,
@@ -92,9 +100,11 @@ def _fetch_role_topics(conn, topic_ids: Optional[Sequence[int]] = None) -> List[
             FROM topics t
             LEFT JOIN roles r ON r.topic_id = t.id
             JOIN users author ON author.id = t.author_user_id
-            LEFT JOIN users stu ON stu.id = r.approved_student_user_id
+            LEFT JOIN approved_students aps ON aps.role_id = r.id
+            LEFT JOIN users stu ON stu.id = aps.student_id
             LEFT JOIN users sup ON sup.id = t.approved_supervisor_user_id
             {where_clause}
+            GROUP BY r.id, t.id, t.title, t.author_user_id, author.full_name, t.approved_supervisor_user_id, sup.full_name
             ORDER BY t.created_at DESC, r.id ASC NULLS LAST
             """
         )
@@ -131,12 +141,21 @@ def _fetch_role_topics(conn, topic_ids: Optional[Sequence[int]] = None) -> List[
             topic_order.append(topic_id)
         role_id = row.get("role_id")
         if role_id is not None:
+            approved_students: List[Dict[str, Any]]
+            raw_approved = row.get("approved_students")
+            if isinstance(raw_approved, list):
+                approved_students = [
+                    {"id": item.get("student_id"), "full_name": item.get("full_name")}
+                    for item in raw_approved
+                    if isinstance(item, dict)
+                ]
+            else:
+                approved_students = []
             topic["roles"].append(
                 {
                     "id": role_id,
                     "name": row.get("role_name"),
-                    "approved_student_user_id": row.get("approved_student_user_id"),
-                    "approved_student_name": row.get("approved_student_name"),
+                    "approved_students": approved_students,
                 }
             )
     if topic_ids:
@@ -238,12 +257,22 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
     async def update_assignment(payload: Dict[str, Any] = Body(...)):
         """Принимает AJAX-запрос для обновления назначений по ролям и темам."""
         role_updates: Dict[int, Optional[int]] = {}
+        role_additions: List[Tuple[int, int]] = []
+        role_removals: List[Tuple[int, int]] = []
         topic_updates: Dict[int, Optional[int]] = {}
         if "role_id" in payload:
-            role_updates[int(payload["role_id"])] = parse_optional_int(payload.get("student_id"))
+            role_id = int(payload["role_id"])
+            student_id = parse_optional_int(payload.get("student_id"))
+            action = str(payload.get("action") or "add").lower()
+            if action == "remove" and student_id is not None:
+                role_removals.append((role_id, student_id))
+            elif action == "set":
+                role_updates[role_id] = student_id
+            elif student_id is not None:
+                role_additions.append((role_id, student_id))
         if "topic_id" in payload:
             topic_updates[int(payload["topic_id"])] = parse_optional_int(payload.get("supervisor_id"))
-        message = _apply_assignment_updates(ctx, role_updates, topic_updates)
+        message = _apply_assignment_updates(ctx, role_updates, topic_updates, role_additions, role_removals)
         return JSONResponse({"status": "ok", "message": message})
 
 
@@ -251,27 +280,51 @@ def _apply_assignment_updates(
     ctx: AdminContext,
     role_updates: Dict[int, Optional[int]],
     topic_updates: Dict[int, Optional[int]],
+    role_additions: Optional[Sequence[Tuple[int, int]]] = None,
+    role_removals: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> str:
     """Сохраняет выбранных студентов и наставников и запускает обновление эмбеддингов."""
     updated_roles = 0
     updated_topics = 0
+    role_additions = role_additions or []
+    role_removals = role_removals or []
 
-    if role_updates or topic_updates:
+    if role_updates or topic_updates or role_additions or role_removals:
         with ctx.get_conn() as conn, conn.cursor() as cur:
             for role_id, student_id in role_updates.items():
-                cur.execute("SELECT approved_student_user_id FROM roles WHERE id=%s", (role_id,))
-                row = cur.fetchone()
-                if not row:
+                cur.execute("SELECT 1 FROM roles WHERE id=%s", (role_id,))
+                if not cur.fetchone():
                     continue
-                current_student_id = row[0]
-                if current_student_id == student_id:
-                    continue
+                cur.execute("DELETE FROM approved_students WHERE role_id=%s", (role_id,))
                 if student_id is not None:
                     cur.execute("SELECT 1 FROM users WHERE id=%s AND role='student'", (student_id,))
                     if not cur.fetchone():
                         continue
+                    cur.execute(
+                        "INSERT INTO approved_students(student_id, role_id) VALUES (%s, %s) ON CONFLICT (role_id, student_id) DO NOTHING",
+                        (student_id, role_id),
+                    )
+                updated_roles += 1
+                enqueue_refresh(conn, "role", role_id)
+
+            for role_id, student_id in role_removals:
                 cur.execute(
-                    "UPDATE roles SET approved_student_user_id=%s, updated_at=now() WHERE id=%s",
+                    "DELETE FROM approved_students WHERE role_id=%s AND student_id=%s",
+                    (role_id, student_id),
+                )
+                if cur.rowcount:
+                    updated_roles += 1
+                    enqueue_refresh(conn, "role", role_id)
+
+            for role_id, student_id in role_additions:
+                cur.execute("SELECT 1 FROM roles WHERE id=%s", (role_id,))
+                if not cur.fetchone():
+                    continue
+                cur.execute("SELECT 1 FROM users WHERE id=%s AND role='student'", (student_id,))
+                if not cur.fetchone():
+                    continue
+                cur.execute(
+                    "INSERT INTO approved_students(student_id, role_id) VALUES (%s, %s) ON CONFLICT (role_id, student_id) DO NOTHING",
                     (student_id, role_id),
                 )
                 updated_roles += 1

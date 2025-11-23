@@ -55,9 +55,16 @@
               </form>
             </div>
             <div class="muted">Навыки: {{ role.required_skills or '—' }}</div>
-            {% if role.approved_student_user_id %}
-              <div class="muted">Назначен студент ID {{ role.approved_student_user_id }}</div>
-            {% endif %}
+            <div class="stack" style="gap:4px;">
+              <span class="muted">Утверждённые студенты:</span>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                {% for s in role.approved_students %}
+                  <span class="badge">{{ s.full_name or ('ID ' ~ s.id) }}</span>
+                {% else %}
+                  <span class="muted">— Нет утверждённых —</span>
+                {% endfor %}
+              </div>
+            </div>
           </div>
         </div>
       {% else %}

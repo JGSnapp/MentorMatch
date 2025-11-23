@@ -15,9 +15,9 @@
       }, 6000);
     }
 
-    async function postAssignment(payload, select) {
-      if (!select) return;
-      select.disabled = true;
+    async function postAssignment(payload, target) {
+      if (!target) return;
+      target.disabled = true;
       flash && (flash.hidden = true);
       try {
         const response = await fetch('/assignments', {
@@ -33,7 +33,7 @@
         showMessage('Не удалось сохранить изменения', true);
         console.error(err);
       } finally {
-        select.disabled = false;
+        target.disabled = false;
       }
     }
 
@@ -41,16 +41,39 @@
       const target = event.target;
       if (!(target instanceof HTMLSelectElement)) return;
       if (target.matches('[data-role-select]')) {
+        const studentId = target.value || null;
+        if (!studentId) return;
         postAssignment({
           role_id: target.dataset.roleId,
-          student_id: target.value || null,
-        }, target);
+          student_id: studentId,
+          action: 'add',
+        }, target).then(() => {
+          target.value = '';
+        });
       }
       if (target.matches('[data-supervisor-select]')) {
         postAssignment({
           topic_id: target.dataset.topicId,
           supervisor_id: target.value || null,
         }, target);
+      }
+    });
+
+    document.body.addEventListener('click', (event) => {
+      const btn = event.target;
+      if (!(btn instanceof HTMLElement)) return;
+      if (btn.matches('[data-remove-approval]')) {
+        const roleId = btn.dataset.roleId;
+        const studentId = btn.dataset.studentId;
+        if (!roleId || !studentId) return;
+        postAssignment({
+          role_id: roleId,
+          student_id: studentId,
+          action: 'remove',
+        }, btn).then(() => {
+          const pill = btn.closest('[data-approval-pill]');
+          if (pill) pill.remove();
+        });
       }
     });
   });
@@ -252,17 +275,27 @@
                         </form>
                       </div>
                       <label>
-                        <span class="muted">Студент</span>
+                        <span class="muted">Добавить студента</span>
                         <select data-role-select data-role-id="{{ role.id }}">
-                          <option value="">— Не выбран —</option>
+                          <option value="">— Выбрать —</option>
                           {% for student in all_students %}
-                            <option value="{{ student.id }}" {% if student.id == role.approved_student_user_id %}selected{% endif %}>{{ student.full_name }}</option>
+                            <option value="{{ student.id }}">{{ student.full_name }}</option>
                           {% endfor %}
                         </select>
                       </label>
-                      {% if role.approved_student_name %}
-                        <div class="muted">Назначен: {{ role.approved_student_name }}</div>
-                      {% endif %}
+                      <div class="stack" style="gap:6px;">
+                        <span class="muted">Утверждённые студенты</span>
+                        <div class="chip-list" style="display:flex;flex-wrap:wrap;gap:8px;">
+                          {% for s in role.approved_students %}
+                            <span class="badge" data-approval-pill style="display:inline-flex;align-items:center;gap:6px;">
+                              {{ s.full_name or ('ID ' ~ s.id) }}
+                              <button type="button" class="btn-danger" data-remove-approval data-role-id="{{ role.id }}" data-student-id="{{ s.id }}" style="padding:2px 8px;font-size:12px;">×</button>
+                            </span>
+                          {% else %}
+                            <span class="muted">— Пока нет утверждённых —</span>
+                          {% endfor %}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 {% endfor %}

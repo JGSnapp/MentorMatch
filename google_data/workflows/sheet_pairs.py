@@ -42,7 +42,8 @@ def export_pairs_from_db(conn, spreadsheet_id: str, service_account_file: str) -
                    sup.full_name AS supervisor_name
             FROM roles r
             JOIN topics t ON t.id = r.topic_id
-            LEFT JOIN users stu ON stu.id = r.approved_student_user_id
+            LEFT JOIN approved_students aps ON aps.role_id = r.id
+            LEFT JOIN users stu ON stu.id = aps.student_id
             LEFT JOIN users sup ON sup.id = t.approved_supervisor_user_id
             ORDER BY t.created_at DESC, r.id ASC
             """

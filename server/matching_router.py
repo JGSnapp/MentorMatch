@@ -6,6 +6,8 @@ from fastapi.responses import JSONResponse
 
 from clients.matching_client import (
     match_role as trigger_match_role,
+    match_role_applicants as trigger_match_role_applicants,
+    match_topic_applicants as trigger_match_topic_applicants,
     match_student as trigger_match_student,
     match_supervisor as trigger_match_supervisor,
     match_topic as trigger_match_topic,
@@ -41,6 +43,22 @@ def create_matching_router() -> APIRouter:
     def match_role(role_id: int = Form(...)):
         """Запускает подбор пользователей для выбранной роли."""
         result = trigger_match_role(role_id)
+        status = 200 if result.get("status") == "ok" else 400
+        return JSONResponse(result, status_code=status)
+
+    @router.post("/match-role-applicants", response_class=JSONResponse)
+    def match_role_applicants(role_id: int = Form(...)):
+        """Запускает сортировку откликов на роль."""
+
+        result = trigger_match_role_applicants(role_id)
+        status = 200 if result.get("status") == "ok" else 400
+        return JSONResponse(result, status_code=status)
+
+    @router.post("/match-topic-applicants", response_class=JSONResponse)
+    def match_topic_applicants(topic_id: int = Form(...)):
+        """Запускает сортировку откликов на тему."""
+
+        result = trigger_match_topic_applicants(topic_id)
         status = 200 if result.get("status") == "ok" else 400
         return JSONResponse(result, status_code=status)
 

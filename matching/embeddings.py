@@ -13,6 +13,7 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoModel, AutoTokenizer
 
 DEFAULT_MODEL_REPO_ID = "intfloat/multilingual-e5-base"
+MEMBER_ROLE_NAME = "%member"
 
 ALLOWED_REPO_IDS = {
     "intfloat/multilingual-e5-small",
@@ -322,16 +323,10 @@ def _build_entity_text(entity: Union[Mapping[str, Any], Any], entity_type: str) 
             ]
         )
     elif entity_type == "role":
-        pieces.extend(
-            [
-                _extract_value(entity, "name"),
-                _extract_value(entity, "description"),
-                _extract_value(entity, "required_skills"),
-                _extract_value(entity, "capacity"),
-                _extract_value(entity, "direction"),
-                _extract_value(entity, "seeking_role"),
-            ]
-        )
+        role_name = _extract_value(entity, "name")
+        role_name_normalized = (role_name or "").strip().lower()
+        is_member_role = bool(role_name_normalized) and role_name_normalized == MEMBER_ROLE_NAME
+
         topic_payload = _extract_value(entity, "topic")
         topic_parts: List[Any] = []
         if isinstance(topic_payload, Mapping):
@@ -346,15 +341,27 @@ def _build_entity_text(entity: Union[Mapping[str, Any], Any], entity_type: str) 
                     topic_payload.get("seeking_role"),
                 ]
             )
-        pieces.extend(
-            [
-                _extract_value(entity, "topic_title"),
-                _extract_value(entity, "topic_description"),
-                _extract_value(entity, "topic_expected_outcomes"),
-                _extract_value(entity, "topic_required_skills"),
-                _extract_value(entity, "author_name"),
-            ]
-        )
+
+        topic_fields = [
+            _extract_value(entity, "topic_title"),
+            _extract_value(entity, "topic_description"),
+            _extract_value(entity, "topic_expected_outcomes"),
+            _extract_value(entity, "topic_required_skills"),
+            _extract_value(entity, "author_name"),
+        ]
+
+        if not is_member_role:
+            pieces.extend(
+                [
+                    role_name,
+                    _extract_value(entity, "description"),
+                    _extract_value(entity, "required_skills"),
+                    _extract_value(entity, "capacity"),
+                    _extract_value(entity, "direction"),
+                    _extract_value(entity, "seeking_role"),
+                ]
+            )
+        pieces.extend(topic_fields)
         if topic_parts:
             pieces.extend(topic_parts)
 

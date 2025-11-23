@@ -98,10 +98,18 @@
 - required_skills: text — требования к роли
 - capacity: int — сколько людей нужно на эту роль (опционально)
 - embeddings: vector (pgvector)
-- approved_student_user_id: bigint, FK → users.id (утверждённый студент)
 - created_at, updated_at
 
 Индексы: idx_roles_topic(topic_id)
+
+## approved_students — утверждённые студенты по ролям
+- id: bigserial, PK
+- student_id: bigint, FK → users.id (ON DELETE CASCADE)
+- role_id: bigint, FK → roles.id (ON DELETE CASCADE)
+
+PK: id
+Уникальность: (role_id, student_id)
+Индексы: idx_approved_students_role(role_id), idx_approved_students_student(student_id)
 
 ## role_candidates — кандидаты под роль (ранжирование)
 - role_id: bigint, FK → roles.id (ON DELETE CASCADE)

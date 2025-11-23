@@ -97,6 +97,156 @@ def fetch_role(conn: connection, role_id: int) -> Optional[Dict[str, Any]]:
     return data
 
 
+def fetch_role_applicants(
+    conn: connection,
+    role_id: int,
+    *,
+    statuses: Optional[List[str]] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Возвращает студентов, подавших заявки на роль, отсортированных по расстоянию."""
+
+    statuses = statuses or ["pending", "accepted"]
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"""
+            SELECT * FROM (
+                SELECT
+                    u.id AS user_id,
+                    u.full_name,
+                    u.username,
+                    u.email,
+                    u.created_at,
+                    (u.embeddings <=> r.embeddings) AS distance,
+                    m.created_at AS last_applied_at,
+                    {STUDENT_PROFILE_COLUMNS_SQL},
+                    ROW_NUMBER() OVER (PARTITION BY u.id ORDER BY m.created_at DESC) AS rn
+                FROM roles r
+                JOIN messages m ON m.role_id = r.id
+                JOIN users u ON u.id = m.sender_user_id
+                LEFT JOIN student_profiles sp ON sp.user_id = u.id
+                WHERE r.id = %s
+                  AND r.embeddings IS NOT NULL
+                  AND u.embeddings IS NOT NULL
+                  AND (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
+                  AND m.status = ANY(%s)
+            ) ranked
+            WHERE rn = 1
+            ORDER BY distance ASC NULLS LAST, last_applied_at DESC
+            LIMIT %s
+            """,
+            (role_id, statuses, limit),
+        )
+        rows = cur.fetchall()
+
+    applicants: List[Dict[str, Any]] = []
+    log_payload: List[Dict[str, Any]] = []
+    for row in rows:
+        data = dict(row)
+        distance = data.pop("distance", None)
+        score: Optional[float] = None
+        if distance is not None:
+            distance = float(distance)
+            score = 1.0 - distance
+        data["score"] = score
+        applicants.append(data)
+        log_payload.append(
+            {
+                "id": data.get("user_id"),
+                "full_name": data.get("full_name"),
+                "score": score,
+                "distance": distance,
+                "applied_at": data.get("last_applied_at"),
+            }
+        )
+
+    if log_payload:
+        logger.info(
+            "Top %s applicants for role %s by cosine distance: %s",
+            len(log_payload),
+            role_id,
+            log_payload,
+        )
+
+    return applicants
+
+
+def fetch_topic_applicants(
+    conn: connection,
+    topic_id: int,
+    *,
+    statuses: Optional[List[str]] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Возвращает студентов, подавших заявки на тему, отсортированных по расстоянию."""
+
+    statuses = statuses or ["pending", "accepted"]
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            f"""
+            SELECT * FROM (
+                SELECT
+                    u.id AS user_id,
+                    u.full_name,
+                    u.username,
+                    u.email,
+                    u.created_at,
+                    (u.embeddings <=> t.embeddings) AS distance,
+                    m.created_at AS last_applied_at,
+                    {STUDENT_PROFILE_COLUMNS_SQL},
+                    ROW_NUMBER() OVER (PARTITION BY u.id ORDER BY m.created_at DESC) AS rn
+                FROM topics t
+                JOIN messages m ON m.topic_id = t.id
+                JOIN users u ON u.id = m.sender_user_id
+                LEFT JOIN student_profiles sp ON sp.user_id = u.id
+                WHERE t.id = %s
+                  AND t.embeddings IS NOT NULL
+                  AND u.embeddings IS NOT NULL
+                  AND (LOWER(u.role) = 'student' OR sp.user_id IS NOT NULL)
+                  AND m.status = ANY(%s)
+            ) ranked
+            WHERE rn = 1
+            ORDER BY distance ASC NULLS LAST, last_applied_at DESC
+            LIMIT %s
+            """,
+            (topic_id, statuses, limit),
+        )
+        rows = cur.fetchall()
+
+    applicants: List[Dict[str, Any]] = []
+    log_payload: List[Dict[str, Any]] = []
+    for row in rows:
+        data = dict(row)
+        distance = data.pop("distance", None)
+        score: Optional[float] = None
+        if distance is not None:
+            distance = float(distance)
+            score = 1.0 - distance
+        data["score"] = score
+        applicants.append(data)
+        log_payload.append(
+            {
+                "id": data.get("user_id"),
+                "full_name": data.get("full_name"),
+                "score": score,
+                "distance": distance,
+                "applied_at": data.get("last_applied_at"),
+            }
+        )
+
+    if log_payload:
+        logger.info(
+            "Top %s applicants for topic %s by cosine distance: %s",
+            len(log_payload),
+            topic_id,
+            log_payload,
+        )
+
+    return applicants
+
+
 def fetch_candidates(
     conn: connection, topic_id: int, target_role: str, *, limit: int = 20
 ) -> List[Dict[str, Any]]:

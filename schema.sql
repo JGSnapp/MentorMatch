@@ -166,12 +166,21 @@ CREATE TABLE roles (
   required_skills TEXT,
   capacity        INTEGER,
   embeddings      VECTOR,
-  approved_student_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_roles_topic ON roles(topic_id);
+
+CREATE TABLE approved_students (
+  id         BIGSERIAL PRIMARY KEY,
+  student_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role_id    BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  UNIQUE(role_id, student_id)
+);
+
+CREATE INDEX idx_approved_students_role ON approved_students(role_id);
+CREATE INDEX idx_approved_students_student ON approved_students(student_id);
 
 -- Students recommended for a role (matching: role -> students)
 CREATE TABLE role_candidates (

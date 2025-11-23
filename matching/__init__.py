@@ -3,6 +3,8 @@ from .llm import MatchingLLMClient, create_matching_llm_client
 from .service import (
     handle_match,
     handle_match_role,
+    handle_match_role_applicants,
+    handle_match_topic_applicants,
     handle_match_student,
     handle_match_supervisor_user,
 )
@@ -12,6 +14,8 @@ __all__ = [
     "create_matching_llm_client",
     "handle_match",
     "handle_match_role",
+    "handle_match_role_applicants",
+    "handle_match_topic_applicants",
     "handle_match_student",
     "handle_match_supervisor_user",
 ]

@@ -3,12 +3,102 @@
 {% block header_meta %}
 <p class="muted">Роль по теме «{{ role.topic_title }}»</p>
 {% endblock %}
+{% block extra_head %}
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const flash = document.querySelector('[data-flash]');
+    function showMessage(text, isError = false) {
+      if (!flash) return;
+      flash.textContent = text;
+      flash.dataset.state = isError ? 'error' : 'ok';
+      flash.hidden = false;
+      clearTimeout(flash._timer);
+      flash._timer = setTimeout(() => {
+        flash.hidden = true;
+      }, 6000);
+    }
+
+    async function postAssignment(payload, target) {
+      if (!target) return;
+      target.disabled = true;
+      flash && (flash.hidden = true);
+      try {
+        const response = await fetch('/assignments', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        showMessage(data?.message || 'Обновлено', !response.ok);
+        if (response.ok && payload.action === 'remove') {
+          const pill = target.closest('[data-approval-pill]');
+          pill && pill.remove();
+        }
+        if (response.ok && payload.action === 'add') {
+          window.location.reload();
+        }
+      } catch (err) {
+        console.error(err);
+        showMessage('Не удалось сохранить изменения', true);
+      } finally {
+        target.disabled = false;
+      }
+    }
+
+    document.body.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement)) return;
+      if (target.matches('[data-role-select]')) {
+        const studentId = target.value || null;
+        if (!studentId) return;
+        postAssignment({
+          role_id: target.dataset.roleId,
+          student_id: studentId,
+          action: 'add',
+        }, target).then(() => {
+          target.value = '';
+        });
+      }
+    });
+
+    document.body.addEventListener('click', (event) => {
+      const btn = event.target;
+      if (!(btn instanceof HTMLElement)) return;
+      if (btn.matches('[data-remove-approval]')) {
+        const roleId = btn.dataset.roleId;
+        const studentId = btn.dataset.studentId;
+        if (!roleId || !studentId) return;
+        postAssignment({
+          role_id: roleId,
+          student_id: studentId,
+          action: 'remove',
+        }, btn);
+      }
+    });
+  });
+</script>
+<style>
+  [data-flash] {
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    background: rgba(56, 189, 248, 0.08);
+    color: #e0f2fe;
+  }
+  [data-flash][data-state="error"] {
+    border-color: rgba(248, 113, 113, 0.4);
+    background: rgba(248, 113, 113, 0.12);
+    color: #fecaca;
+  }
+</style>
+{% endblock %}
 {% block header_actions %}
   <a class="btn-secondary" href="/topic/{{ role.topic_id }}">К теме</a>
   <a class="btn-secondary" href="/?tab=topics">К списку тем</a>
 {% endblock %}
 {% block content %}
   <section class="surface stack">
+    <div class="message" data-flash hidden></div>
     {% if msg %}
       <div class="message">{{ msg }}</div>
     {% endif %}
@@ -33,6 +123,31 @@
       <div class="stack">
         <h3 class="section-title">Требуемые навыки</h3>
         <p>{{ role.required_skills or '—' }}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="surface stack">
+    <h3 class="section-title">Утверждённые студенты</h3>
+    <div class="stack" style="gap:10px;">
+      <label>
+        <span class="muted">Добавить студента</span>
+        <select data-role-select data-role-id="{{ role.id }}">
+          <option value="">— Выбрать —</option>
+          {% for student in all_students %}
+            <option value="{{ student.id }}">{{ student.full_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        {% for s in role.approved_students %}
+          <span class="badge" data-approval-pill style="display:inline-flex;align-items:center;gap:6px;">
+            {{ s.full_name or ('ID ' ~ s.id) }}
+            <button type="button" class="btn-danger" data-remove-approval data-role-id="{{ role.id }}" data-student-id="{{ s.id }}" style="padding:2px 8px;font-size:12px;">×</button>
+          </span>
+        {% else %}
+          <span class="muted">— Пока нет утверждённых —</span>
+        {% endfor %}
       </div>
     </div>
   </section>

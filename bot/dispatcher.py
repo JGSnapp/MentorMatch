@@ -88,6 +88,16 @@ def setup(application: Application, bot) -> None:
     )
     application.add_handler(
         CallbackQueryHandler(
+            bot.cb_match_role_applicants, pattern=r"^match_role_applicants_\d+$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            bot.cb_match_topic_applicants, pattern=r"^match_topic_applicants_\d+$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
             bot.cb_match_topics_for_supervisor,
             pattern=r"^match_topics_for_supervisor_\d+$",
         )
