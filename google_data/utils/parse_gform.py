@@ -163,7 +163,12 @@ HEADER_ALIASES: Dict[str, List[str]] = {
     'sales': ["sales", "negotiation"],
     'tech_execution': ["tech execution"],
     'data_analytics': ["data & analytics", "data analytics"],
-    'marketing_design': ["marketing & design"],
+    'marketing_design': [
+        "marketing & design",
+        "насколько разбираешься в теме чтобы ей заняться devrel smm pr",
+        "насколько разбираешься в теме чтобы ей заняться дизайн figma photoshop",
+        "насколько разбираешься в теме чтобы ей заняться фотографирование видеосъемка подготовка рилсов генерация картинок и видео контента",
+    ],
     'finance_business': ["finance & business"],
     'team_leadership': ["team leadership"],
     'apply_master': ["планируете поступать в магистратуру", "планируете поступать в аспирантуру"],
@@ -340,12 +345,13 @@ SUP_HEADER_ALIASES: Dict[str, List[str]] = {
     'isu_number': ["номер ису"],
     'telegram': ["telegram", "телеграм", "ник telegram", "telegram куратора"],
     'email': ["адрес электронной почты", "email", "e-mail", "email куратора"],
-    'topic_title': ["тема / тематика проекта", "тема проекта", "тематика проекта"],
-    'topic_description': ["описание проекта"],
+    'topic_title': ["тема / тематика проекта", "тема проекта", "тематика проекта", "краткое название темы/тематики"],
+    'topic_description': ["описание проекта", "описание: тематики/задачи"],
     'expected_outcomes': ["ожидаемые результаты"],
-    'required_skills': ["требования к студентам", "требования"],
+    'required_skills': ["требования к студентам", "требования", "запрос/требования к студентам"],
     'capacity': ["количество доступных мест", "количество доступных мест в проекте"],
     'required_roles': ["требуемые роли", "необходимые роли"],
+    'resources': ["доступные ресурсы", "доступные ресурсы партнеры", "доступные ресурсы, партнеры", "доступные ресурсы, партнёры"],
 }
 
 
@@ -391,6 +397,7 @@ def _normalize_supervisor_row(row: List[str], cols: Dict[str, Any]) -> Dict[str,
         'topic_description': _cell(row, cols.get('topic_description')) or None,
         'expected_outcomes': _cell(row, cols.get('expected_outcomes')) or None,
         'required_skills': _cell(row, cols.get('required_skills')) or None,
+        'resources': _cell(row, cols.get('resources')) or None,
         'capacity': capacity_val,
         'required_roles': required_roles,
     }

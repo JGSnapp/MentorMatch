@@ -1588,7 +1588,7 @@ class EntityHandlers(BaseHandlers):
         if answer:
             lines.append('')
             lines.append('Ответ:')
-        lines.append(answer)
+            lines.append(answer)
         kb: List[List[InlineKeyboardButton]] = []
         def _same_user(a: Any, b: Any) -> bool:
             """Выполняет функцию _same_user."""

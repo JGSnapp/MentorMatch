@@ -383,6 +383,14 @@ def import_supervisors(
             upserted_profiles += 1
 
             title = (row.get("topic_title") or "").strip()
+            resources = (row.get("resources") or "").strip()
+            description_raw = (row.get("topic_description") or "").strip()
+            if description_raw and resources:
+                description_val = f"{description_raw}\n\nДоступные ресурсы, партнёры: {resources}"
+            elif resources:
+                description_val = f"Доступные ресурсы, партнёры: {resources}"
+            else:
+                description_val = description_raw or None
             if title:
                 cur.execute(
                     "SELECT id FROM topics WHERE author_user_id=%s AND title=%s LIMIT 1",
@@ -402,7 +410,7 @@ def import_supervisors(
                         WHERE id=%s
                         """,
                         (
-                            row.get("topic_description"),
+                            description_val,
                             row.get("expected_outcomes"),
                             row.get("required_skills"),
                             topic_id,
@@ -419,7 +427,7 @@ def import_supervisors(
                         (
                             user_id,
                             title,
-                            row.get("topic_description"),
+                            description_val,
                             row.get("expected_outcomes"),
                             row.get("required_skills"),
                             None,
