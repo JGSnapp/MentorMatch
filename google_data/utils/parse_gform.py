@@ -221,6 +221,9 @@ def _normalize_row(row: List[str], cols: Dict[str, int]) -> Dict[str, Any]:
     interests = _cell(row, cols.get('interests'))
     portfolio_raw = _cell(row, cols.get('portfolio'))
     cv_raw = _cell(row, cols.get('cv'))
+    theme_name = _cell(row, cols.get('thematic_choice')) or None
+    roles_raw = _cell(row, cols.get('team_role'))
+    requested_roles = _split_list(roles_raw) if roles_raw else None
 
     telegram_link = _format_telegram_link(_cell(row, cols.get('telegram')))
     cv_link = _extract_first_url(cv_raw)
@@ -265,8 +268,10 @@ def _normalize_row(row: List[str], cols: Dict[str, int]) -> Dict[str, Any]:
         'team_leadership_level': _to_level_0_5(_cell(row, cols.get('team_leadership'))),
         'apply_master': _to_bool_ru(_cell(row, cols.get('apply_master'))),
         'hours_per_week': _to_int_value(_cell(row, cols.get('hours_per_week'))),
-        'thematic_choice': _cell(row, cols.get('thematic_choice')) or None,
-        'team_role': _cell(row, cols.get('team_role')) or None,
+        'requested_theme': theme_name,
+        'requested_roles': requested_roles,
+        'thematic_choice': None,
+        'team_role': None,
         'plan_for_lab': _cell(row, cols.get('plan_for_lab')) or None,
         'motivation_letter': _cell(row, cols.get('motivation_letter')) or None,
         'police_clearance': _cell(row, cols.get('police_clearance')) or None,
@@ -331,21 +336,24 @@ def fetch_normalized_rows(
 
 SUP_HEADER_ALIASES: Dict[str, List[str]] = {
     'timestamp': ["отметка времени"],
-    'email': ["адрес электронной почты", "email", "e-mail"],
-    'full_name': ["фио", "введите фио"],
-    'topics_text': ["перечень тем", "темы", "перечень тем для студентов", "предлагаемые темы"],
-    'area': ["область научного интереса", "область интереса", "область"],
-    'extra_info': ["дополнительная информация", "доп информация", "прочее"],
-    'telegram': ["ник telegram", "введите ник telegram", "telegram", "телеграм"],
+    'full_name': ["фио", "ф.и.о.", "ф.и.о. куратора", "ф.и.о. куратора проекта"],
+    'isu_number': ["номер ису"],
+    'telegram': ["telegram", "телеграм", "ник telegram", "telegram куратора"],
+    'email': ["адрес электронной почты", "email", "e-mail", "email куратора"],
+    'topic_title': ["тема / тематика проекта", "тема проекта", "тематика проекта"],
+    'topic_description': ["описание проекта"],
+    'expected_outcomes': ["ожидаемые результаты"],
+    'required_skills': ["требования к студентам", "требования"],
+    'capacity': ["количество доступных мест", "количество доступных мест в проекте"],
+    'required_roles': ["требуемые роли", "необходимые роли"],
 }
 
 
                                                                     
 def _build_col_index_sup(headers: List[str]) -> Dict[str, int]:
-    """Определяет индексы колонок в анкете наставников по известным заголовкам."""
+    """Определяет индексы колонок в анкете наставников по новым заголовкам."""
     idx_map: Dict[str, Any] = {}
-    sim_raw = [_simplify(h) for h in headers]
-    sim = [h.replace(" ", "") for h in sim_raw]
+    sim = [_simplify(h).replace(" ", "") for h in headers]
     for key, aliases in SUP_HEADER_ALIASES.items():
         alias_norms = [_normalize_for_match(a) for a in aliases]
         for i, h in enumerate(sim):
@@ -354,19 +362,6 @@ def _build_col_index_sup(headers: List[str]) -> Dict[str, int]:
             if any(a and a in h for a in alias_norms):
                 idx_map[key] = i
                 break
-
-    topics_cols = []
-    for i, h in enumerate(sim_raw):
-        if (('темы' in h or 'тематики' in h) and 'вкр' in h):
-            topics_cols.append(i)
-            if '45' in h:
-                idx_map['topics_45'] = i
-            if '09' in h or ' 9 ' in f' {h} ':
-                idx_map['topics_09'] = i
-            if '11' in h:
-                idx_map['topics_11'] = i
-    if topics_cols:
-        idx_map['topics_multi'] = topics_cols
 
     if (os.getenv('LOG_LEVEL') or '').upper() == 'DEBUG':
         try:
@@ -381,39 +376,23 @@ def _build_col_index_sup(headers: List[str]) -> Dict[str, int]:
 def _normalize_supervisor_row(row: List[str], cols: Dict[str, Any]) -> Dict[str, Any]:
     """Преобразует строку наставника в структурированный словарь."""
     telegram_link = _format_telegram_link(_cell(row, cols.get('telegram')))
-    area = _cell(row, cols.get('area')) or None
-
-    parts: List[str] = []
-    first = _cell(row, cols.get('topics_text')) if isinstance(cols.get('topics_text'), int) else ''
-    if first:
-        parts.append(first)
-    multi = cols.get('topics_multi')
-    if isinstance(multi, list):
-        for i in multi:
-            if isinstance(cols.get('topics_text'), int) and i == cols.get('topics_text'):
-                continue
-            val = _cell(row, i)
-            if val:
-                parts.append(val)
-    topics_text = '\n'.join([p for p in parts if p and p.strip()]) or None
-
-    topics_45 = _cell(row, cols.get('topics_45')) or None
-    topics_09 = _cell(row, cols.get('topics_09')) or None
-    topics_11 = _cell(row, cols.get('topics_11')) or None
-
-    extra_info = _cell(row, cols.get('extra_info')) or None
+    capacity_raw = _cell(row, cols.get('capacity'))
+    capacity_val = _to_int_value(capacity_raw)
+    roles_raw = _cell(row, cols.get('required_roles'))
+    required_roles = _split_list(roles_raw) if roles_raw else None
 
     return {
         'timestamp': _parse_timestamp(_cell(row, cols.get('timestamp'))),
         'full_name': _cell(row, cols.get('full_name')) or None,
         'email': _cell(row, cols.get('email')) or None,
         'telegram': telegram_link,
-        'area': area,
-        'topics_text': topics_text,
-        'topics_45': topics_45,
-        'topics_09': topics_09,
-        'topics_11': topics_11,
-        'extra_info': extra_info,
+        'isu_number': _cell(row, cols.get('isu_number')) or None,
+        'topic_title': _cell(row, cols.get('topic_title')) or None,
+        'topic_description': _cell(row, cols.get('topic_description')) or None,
+        'expected_outcomes': _cell(row, cols.get('expected_outcomes')) or None,
+        'required_skills': _cell(row, cols.get('required_skills')) or None,
+        'capacity': capacity_val,
+        'required_roles': required_roles,
     }
 
 

@@ -53,6 +53,7 @@ def export_pairs(payload: ExportPairsPayload) -> JSONResponse:
     spreadsheet_id = (
         (payload.spreadsheet_id or "").strip()
         or os.getenv("PAIRS_SPREADSHEET_ID")
+        or os.getenv("STUDENT_SPREADSHEET_ID")
         or os.getenv("SPREADSHEET_ID")
     )
     if not spreadsheet_id:

@@ -362,7 +362,7 @@ def fetch_topics_needing_students(conn: connection, limit: int = 20) -> List[Dic
                    t.author_user_id, u.full_name AS author_name, t.created_at
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
-            WHERE t.is_active = TRUE AND t.seeking_role = 'student'
+            WHERE t.seeking_role = 'student'
             ORDER BY t.created_at DESC
             LIMIT %s
             """,
@@ -393,7 +393,6 @@ def fetch_roles_needing_students(
             FROM users su
             JOIN roles r ON r.embeddings IS NOT NULL
             JOIN topics t ON t.id = r.topic_id
-                AND t.is_active = TRUE
                 AND t.seeking_role = 'student'
             JOIN users author ON author.id = t.author_user_id
             WHERE su.id = %s
@@ -472,7 +471,6 @@ def fetch_topics_needing_supervisors(
                 (t.embeddings <=> sup.embeddings) AS distance
             FROM users sup
             JOIN topics t ON t.embeddings IS NOT NULL
-                AND t.is_active = TRUE
                 AND t.seeking_role = 'supervisor'
             JOIN users author ON author.id = t.author_user_id
             WHERE sup.id = %s

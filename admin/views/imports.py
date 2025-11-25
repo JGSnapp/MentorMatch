@@ -16,19 +16,25 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
     @router.get('/import-sheet')
     def import_sheet(request: Request, target: Optional[str] = None, sheet_name: Optional[str] = None):
         """Запускает импорт студентов или наставников и перенаправляет с результатом."""
-        spreadsheet_id = (os.getenv('SPREADSHEET_ID') or '').strip()
-        if not spreadsheet_id:
-            notice = urllib.parse.quote('Не указан идентификатор таблицы SPREADSHEET_ID')
-            return RedirectResponse(url=f'/?tab=students&msg={notice}', status_code=303)
-
         desired = (target or 'students').strip().lower()
+        if desired == 'supervisors':
+            spreadsheet_id = (os.getenv('SUPERVISOR_SPREADSHEET_ID') or '').strip()
+            env_name = 'SUPERVISOR_SPREADSHEET_ID'
+            tab = 'supervisors'
+        else:
+            spreadsheet_id = (os.getenv('STUDENT_SPREADSHEET_ID') or '').strip()
+            env_name = 'STUDENT_SPREADSHEET_ID'
+            tab = 'students'
+
+        if not spreadsheet_id:
+            notice = urllib.parse.quote(f'Не указан идентификатор таблицы {env_name}')
+            return RedirectResponse(url=f'/?tab={tab}&msg={notice}', status_code=303)
+
         try:
             if desired == 'supervisors':
                 result = import_supervisors(spreadsheet_id, sheet_name)
-                tab = 'supervisors'
             else:
                 result = import_students(spreadsheet_id, sheet_name)
-                tab = 'students'
         except Exception as exc:                                       
             detail = urllib.parse.quote(f'Ошибка импорта: {type(exc).__name__}: {exc}')
             return RedirectResponse(url=f'/?tab={tab}&msg={detail}', status_code=303)

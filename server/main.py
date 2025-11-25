@@ -179,6 +179,16 @@ def _display_name(name: Optional[str], fallback_id: Optional[Any]) -> str:
     return 'Пользователь'
 
 
+def _get_student_spreadsheet_id() -> str:
+    """Возвращает ID таблицы студентов (новый env), с поддержкой старого SPREADSHEET_ID как fallback."""
+    return (os.getenv('STUDENT_SPREADSHEET_ID') or os.getenv('SPREADSHEET_ID') or '').strip()
+
+
+def _get_supervisor_spreadsheet_id() -> str:
+    """Возвращает ID таблицы наставников."""
+    return (os.getenv('SUPERVISOR_SPREADSHEET_ID') or '').strip()
+
+
 def _send_telegram_notification(telegram_id: Optional[Any], text: str, *, button_text: Optional[str] = None, callback_data: Optional[str] = None) -> bool:
     """Отправляет уведомление в бота MentorMatch, формируя запрос к HTTP API."""
     base_url = (
@@ -356,8 +366,8 @@ def _maybe_test_import():
                 cur.execute(
                     """
                     INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills,
-                                       seeking_role, is_active, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, TRUE, now(), now())
+                                       seeking_role, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, now(), now())
                     RETURNING id
                     """,
                     (
@@ -613,7 +623,6 @@ def api_get_topics(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, 
                    t.author_user_id
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
-            WHERE t.is_active = TRUE
             ORDER BY t.created_at DESC
             OFFSET %s LIMIT %s
             ''', (offset, limit),
@@ -633,7 +642,7 @@ def api_get_topic(topic_id: int):
                    t.author_user_id
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
-            WHERE t.id = %s AND t.is_active = TRUE
+            WHERE t.id = %s
             ''', (topic_id,),
         )
         topic = cur.fetchone()
@@ -738,7 +747,6 @@ def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: 
                 t.required_skills,
                 t.seeking_role,
                 t.direction,
-                t.is_active,
                 t.created_at,
                 t.author_user_id,
                 (t.author_user_id = %(uid)s) AS is_author,
@@ -815,17 +823,21 @@ def api_user_topics(user_id: int, limit: int = Query(50, ge=1, le=200), offset: 
 @app.get('/api/sheets-status', response_class=JSONResponse)
 def api_get_sheets_status():
     """Выполняет функцию api_get_sheets_status."""
-    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    student_sid = _get_student_spreadsheet_id()
+    supervisor_sid = _get_supervisor_spreadsheet_id()
     service_account_file = os.getenv('SERVICE_ACCOUNT_FILE')
-    if spreadsheet_id and service_account_file:
+    if (student_sid or supervisor_sid) and service_account_file:
         return {
             'status': 'configured',
-            'spreadsheet_id': spreadsheet_id[:20] + '...' if len(spreadsheet_id) > 20 else spreadsheet_id,
+            'student_spreadsheet_id': student_sid[:20] + '...' if len(student_sid) > 20 else student_sid,
+            'supervisor_spreadsheet_id': supervisor_sid[:20] + '...' if len(supervisor_sid) > 20 else supervisor_sid,
             'service_account_file': service_account_file,
         }
     missing_vars = []
-    if not spreadsheet_id:
-        missing_vars.append('SPREADSHEET_ID')
+    if not student_sid:
+        missing_vars.append('STUDENT_SPREADSHEET_ID')
+    if not supervisor_sid:
+        missing_vars.append('SUPERVISOR_SPREADSHEET_ID')
     if not service_account_file:
         missing_vars.append('SERVICE_ACCOUNT_FILE')
     return {'status': 'not_configured', 'missing_vars': missing_vars}
@@ -834,10 +846,11 @@ def api_get_sheets_status():
 @app.get('/api/sheets-config', response_class=JSONResponse)
 def api_get_sheets_config():
     """Выполняет функцию api_get_sheets_config."""
-    spreadsheet_id = os.getenv('SPREADSHEET_ID')
+    student_sid = _get_student_spreadsheet_id()
+    supervisor_sid = _get_supervisor_spreadsheet_id()
     service_account_file = resolve_service_account_path(os.getenv('SERVICE_ACCOUNT_FILE'))
-    if spreadsheet_id and service_account_file:
-                                                                                 
+    if (student_sid or supervisor_sid) and service_account_file:
+
         try:
             import os as _os
             if not _os.path.exists(service_account_file):
@@ -845,13 +858,26 @@ def api_get_sheets_config():
                     'status': 'not_configured',
                     'error': 'SERVICE_ACCOUNT_FILE not found',
                     'service_account_file': service_account_file,
-                    'spreadsheet_id': spreadsheet_id,
+                    'student_spreadsheet_id': student_sid,
+                    'supervisor_spreadsheet_id': supervisor_sid,
                 }
         except Exception:
-                                                                          
+
             pass
-        return {'status': 'configured', 'spreadsheet_id': spreadsheet_id, 'service_account_file': service_account_file}
-    return {'status': 'not_configured', 'error': 'Missing env vars'}
+        return {
+            'status': 'configured',
+            'student_spreadsheet_id': student_sid,
+            'supervisor_spreadsheet_id': supervisor_sid,
+            'service_account_file': service_account_file,
+        }
+    missing_vars = []
+    if not student_sid:
+        missing_vars.append('STUDENT_SPREADSHEET_ID')
+    if not supervisor_sid:
+        missing_vars.append('SUPERVISOR_SPREADSHEET_ID')
+    if not service_account_file:
+        missing_vars.append('SERVICE_ACCOUNT_FILE')
+    return {'status': 'not_configured', 'error': 'Missing env vars', 'missing_vars': missing_vars}
 
 
                                
@@ -1144,7 +1170,6 @@ def api_add_topic(
     description: Optional[str] = Form(None),
     expected_outcomes: Optional[str] = Form(None),
     required_skills: Optional[str] = Form(None),
-    seeking_role: str = Form('student'),
     direction: Optional[str] = Form(None),
 ):
     """Выполняет функцию api_add_topic."""
@@ -1167,10 +1192,10 @@ def api_add_topic(
             return {'status': 'ok', 'message': 'duplicate'}
         cur.execute(
             '''
-            INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills, direction, seeking_role, is_active, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, now(), now())
+            INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills, direction, seeking_role, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, 'student', now(), now())
             RETURNING id
-            ''', (author_id_val, title_clean, description_val, expected_val, required_val, direction_val, seeking_role),
+            ''', (author_id_val, title_clean, description_val, expected_val, required_val, direction_val),
         )
         tid = cur.fetchone()[0]
         enqueue_refresh(conn, 'topic', tid)
@@ -1238,7 +1263,6 @@ def api_update_topic(
     required_skills: Optional[str] = Form(None),
     direction: Optional[str] = Form(None),
     seeking_role: Optional[str] = Form(None),
-    is_active: Optional[str] = Form(None),
 ):
     """Выполняет функцию api_update_topic."""
     editor_id = parse_optional_int(editor_user_id)
@@ -1247,7 +1271,7 @@ def api_update_topic(
         cur.execute(
             '''
             SELECT author_user_id, title, description, expected_outcomes, required_skills,
-                   direction, seeking_role, is_active
+                   direction, seeking_role
             FROM topics
             WHERE id=%s
             ''',
@@ -1280,27 +1304,13 @@ def api_update_topic(
         )
         direction_value = direction_val if direction is not None else row['direction']
 
-        if seeking_role is None:
-            seeking_role_val = row['seeking_role']
-        else:
-            sr = (seeking_role or '').strip().lower()
-            if sr in {'student', 'студент'}:
-                seeking_role_val = 'student'
-            elif sr in {'supervisor', 'руководитель', 'научный руководитель'}:
-                seeking_role_val = 'supervisor'
-            else:
-                return {'status': 'error', 'message': 'invalid_seeking_role'}
-
-        if is_active is None:
-            active_val = row['is_active']
-        else:
-            active_val = _truthy(is_active)
+        seeking_role_val = 'student'
 
         cur.execute(
             '''
             UPDATE topics
             SET title=%s, description=%s, expected_outcomes=%s, required_skills=%s,
-                direction=%s, seeking_role=%s, is_active=%s, updated_at=now()
+                direction=%s, seeking_role=%s, updated_at=now()
             WHERE id=%s
             ''',
             (
@@ -1310,7 +1320,6 @@ def api_update_topic(
                 required_val,
                 direction_value,
                 seeking_role_val,
-                active_val,
                 topic_id,
             ),
         )
@@ -1514,12 +1523,39 @@ def api_roles_stats():
                 )::INT AS available_roles
             FROM roles r
             JOIN topics t ON t.id = r.topic_id
-            WHERE t.is_active = TRUE
             '''
         )
         row = cur.fetchone() or (0, 0)
     total, available = row
     return {'total': total or 0, 'available': available or 0}
+
+
+@app.get('/api/roles/available', response_class=JSONResponse)
+def api_list_available_roles(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)):
+    """Возвращает список доступных ролей (без ограничения мест, даже если тема неактивна)."""
+    # Keep this route above /api/roles/{role_id} so "available" is not treated as a role id.
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            '''
+            SELECT
+                r.id,
+                r.name,
+                r.description,
+                r.required_skills,
+                r.capacity,
+                t.id AS topic_id,
+                t.title AS topic_title,
+                author.full_name AS author_name
+            FROM roles r
+            JOIN topics t ON t.id = r.topic_id
+            JOIN users author ON author.id = t.author_user_id
+            ORDER BY r.created_at DESC
+            OFFSET %s LIMIT %s
+            ''',
+            (offset, limit),
+        )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
 
 
 @app.get('/api/roles/{role_id}', response_class=JSONResponse)

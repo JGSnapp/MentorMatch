@@ -59,18 +59,24 @@ class MatchingLLMClient:
             return None
 
         if not response.choices or not response.choices[0].message:
+            logger.warning("LLM empty response for %s", function_name)
             return None
 
         message = response.choices[0].message
         function_call = getattr(message, "function_call", None)
         arguments = getattr(function_call, "arguments", None)
         if not arguments:
+            logger.warning("LLM missing function_call.arguments for %s", function_name)
             return None
 
         try:
             parsed = json.loads(arguments)
         except Exception:
-            logger.debug("Failed to decode LLM function arguments: %s", arguments)
+            logger.warning(
+                "Failed to decode LLM function arguments for %s: %s",
+                function_name,
+                arguments,
+            )
             return None
 
         raw_items = parsed.get("top", []) if isinstance(parsed, dict) else []
@@ -83,7 +89,16 @@ class MatchingLLMClient:
                 continue
             items.append(parsed_item)
 
-        return items if len(items) == expected_count else None
+        if len(items) != expected_count:
+            logger.warning(
+                "LLM returned %s items for %s, expected %s",
+                len(items),
+                function_name,
+                expected_count,
+            )
+            return None
+
+        return items
 
     def rank_candidates(
         self, payload_json: str, *, expected_count: int = 5
@@ -367,7 +382,11 @@ class MatchingLLMClient:
 
 def create_matching_llm_client() -> Optional[MatchingLLMClient]:
     """Выполняет функцию create_matching_llm_client."""
-    if not (PROXY_API_KEY and PROXY_BASE_URL):
+    if not PROXY_API_KEY:
+        logger.warning("LLM client not created: PROXY_API_KEY is missing")
+        return None
+    if not PROXY_BASE_URL:
+        logger.warning("LLM client not created: PROXY_BASE_URL is missing")
         return None
     client = OpenAI(api_key=PROXY_API_KEY, base_url=PROXY_BASE_URL)
     return MatchingLLMClient(client, PROXY_MODEL)

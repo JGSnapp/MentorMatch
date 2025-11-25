@@ -42,7 +42,7 @@ Telegram Bot <--> bot service --+
    - `POSTGRES_PASSWORD`
    - `PROXY_API_KEY` (ключ к прокси OpenAI API)
    - `TELEGRAM_BOT_TOKEN`
-   - `SPREADSHEET_ID`
+   - `STUDENT_SPREADSHEET_ID` и/или `SUPERVISOR_SPREADSHEET_ID`
    - `SERVICE_ACCOUNT_FILE` (обычно `service-account.json`)
 3. Поместите JSON сервисного аккаунта в `google_data/service-account.json` и выдайте ему доступ к нужным Google Sheets.
 4. Запустите инфраструктуру:
@@ -71,7 +71,8 @@ Telegram Bot <--> bot service --+
 | `PROXY_BASE_URL` | Базовый URL прокси | `https://api.proxyapi.ru/openai/v1` |
 | `PROXY_MODEL` | Модель для LLM‑матчинга | `gpt-4o-mini` |
 | `MATCHING_LLM_TEMPERATURE` | Температура LLM | `0.2` |
-| `SPREADSHEET_ID` | ID основной Google Sheets | — |
+| `STUDENT_SPREADSHEET_ID` | ID таблицы со студентами | — |
+| `SUPERVISOR_SPREADSHEET_ID` | ID таблицы с наставниками | — |
 | `PAIRS_SPREADSHEET_ID` | ID таблицы с финальными парами (опция) | — |
 | `SERVICE_ACCOUNT_FILE` | Путь к JSON сервисного аккаунта внутри контейнера | `service-account.json` |
 | `BOT_API_URL` | HTTP API Telegram‑бота для уведомлений | `http://bot:5000` |

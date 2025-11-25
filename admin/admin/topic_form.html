@@ -32,25 +32,10 @@
         </label>
       </div>
       <div class="muted">Имя автора обязательно, выберите из списка или впишите вручную.</div>
-      <div class="form-grid two">
-        <label>
-          <span class="title">Кого ищем</span>
-          <select name="seeking_role">
-            <option value="student" {% if topic.seeking_role == 'student' or not topic.seeking_role %}selected{% endif %}>Студента</option>
-            <option value="supervisor" {% if topic.seeking_role == 'supervisor' %}selected{% endif %}>Руководителя</option>
-          </select>
-        </label>
-        <label>
-          <span class="title">Направление (9 / 11 / 45)</span>
-          <input type="number" name="direction" min="0" max="99" value="{{ topic.direction or '' }}" placeholder="Опционально">
-        </label>
-      </div>
-      {% if topic.id %}
-        <label style="display:flex;align-items:center;gap:10px;">
-          <input type="checkbox" name="is_active" value="1" {% if topic.is_active %}checked{% endif %}>
-          <span>Тема активна</span>
-        </label>
-      {% endif %}
+      <label>
+        <span class="title">Направление (9 / 11 / 45)</span>
+        <input type="number" name="direction" min="0" max="99" value="{{ topic.direction or '' }}" placeholder="Опционально">
+      </label>
       <label>
         <span class="title">Описание</span>
         <textarea name="description" rows="6">{{ topic.description or '' }}</textarea>

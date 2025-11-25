@@ -85,10 +85,9 @@
 - embeddings: vector (pgvector)
 - cover_media_id: bigint, FK → media_files.id (ON DELETE SET NULL)
 - approved_supervisor_user_id: bigint, FK → users.id (утверждённый руководитель)
-- is_active: boolean, NOT NULL, DEFAULT true
 - created_at, updated_at: timestamptz, NOT NULL, DEFAULT now()
 
-Индексы: idx_topics_author, idx_topics_seeking_role, idx_topics_active, idx_topics_direction
+Индексы: idx_topics_author, idx_topics_seeking_role, idx_topics_direction
 
 ## roles — роли внутри темы
 - id: bigserial, PK
@@ -110,6 +109,14 @@
 PK: id
 Уникальность: (role_id, student_id)
 Индексы: idx_approved_students_role(role_id), idx_approved_students_student(student_id)
+
+## requested_roles — заявки студентов на роли
+- id: bigserial, PK
+- student_id: bigint, FK → users.id (ON DELETE CASCADE)
+- theme_name: text — название темы
+- role_name: text — название роли
+Уникальность: (student_id, theme_name, role_name)
+Индексы: idx_requested_roles_student(student_id)
 
 ## role_candidates — кандидаты под роль (ранжирование)
 - role_id: bigint, FK → roles.id (ON DELETE CASCADE)

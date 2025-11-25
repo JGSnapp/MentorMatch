@@ -69,7 +69,6 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         expected_outcomes: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
         direction: Optional[str] = Form(None),
-        seeking_role: str = Form('student'),
     ):
         """Создаёт тему в базе и при необходимости заводит автора."""
         author_full_name = (author_full_name or '').strip()
@@ -104,8 +103,8 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 cur.execute(
                     '''
                     INSERT INTO topics(author_user_id, title, description, expected_outcomes, required_skills, direction,
-                                       seeking_role, is_active, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, now(), now())
+                                       seeking_role, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
                     RETURNING id
                     ''',
                     (
@@ -115,7 +114,7 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                         expected_outcomes,
                         required_skills,
                         direction_val,
-                        seeking_role,
+                        'student',
                     ),
                 )
                 inserted = cur.fetchone()
@@ -169,11 +168,8 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
         expected_outcomes: Optional[str] = Form(None),
         required_skills: Optional[str] = Form(None),
         direction: Optional[str] = Form(None),
-        seeking_role: str = Form('student'),
-        is_active: Optional[str] = Form(None),
     ):
         """Сохраняет изменения темы и обновляет её эмбеддинг."""
-        active = str(is_active or '').lower() in ('1', 'true', 'on', 'yes', 'y')
         try:
             author_id = _ensure_author(ctx, author_user_id, author_full_name)
         except ValueError:
@@ -190,8 +186,7 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                     expected_outcomes=%s,
                     required_skills=%s,
                     direction=%s,
-                    seeking_role=%s,
-                    is_active=%s,
+                    seeking_role='student',
                     updated_at=now()
                 WHERE id=%s
                 ''',
@@ -202,8 +197,6 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                     (expected_outcomes or None),
                     (required_skills or None),
                     direction_val,
-                    seeking_role,
-                    active,
                     topic_id,
                 ),
             )

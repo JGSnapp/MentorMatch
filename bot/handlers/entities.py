@@ -401,12 +401,176 @@ class EntityHandlers(BaseHandlers):
         kb: List[List[InlineKeyboardButton]] = []
         if _normalize_value(s.get("cv")):
             kb.append([InlineKeyboardButton('📄 Получить CV', callback_data=f'student_cv_{sid}')])
+        if viewer_role == 'supervisor' and not is_self:
+            kb.append([InlineKeyboardButton('📨 Пригласить на роль', callback_data=f'invite_student_{sid}')])
         if can_edit:
             kb.append([InlineKeyboardButton('✏️ Редактировать профиль', callback_data=f'edit_student_{sid}')])
         if is_admin or is_self:
             kb.append([InlineKeyboardButton('🧠 Подобрать роль', callback_data=f'match_student_{sid}')])
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
+
+    async def cb_invite_student_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начинает приглашение студента на роль (для руководителей)."""
+        q = update.callback_query
+        await self._answer_callback(q)
+        try:
+            student_id = int((q.data or "").rsplit("_", 1)[1])
+        except Exception:
+            await q.edit_message_text(self._fix_text("Некорректный идентификатор студента."))
+            return
+        viewer_id = context.user_data.get("uid")
+        viewer_role = self._normalize_role_value(context.user_data.get("role"))
+        is_admin = self._is_admin(update)
+        if not viewer_id:
+            await q.edit_message_text(self._fix_text("Сначала подтвердите профиль через /start."))
+            return
+        if viewer_role != "supervisor" and not is_admin:
+            await q.edit_message_text(self._fix_text("Приглашать может только научный руководитель."))
+            return
+        if self._ids_equal(viewer_id, student_id):
+            await q.edit_message_text(self._fix_text("Нельзя приглашать самого себя."))
+            return
+
+        student = await self._api_get(f"/api/students/{student_id}")
+        if not student:
+            await q.edit_message_text(self._fix_text("Профиль студента не найден."))
+            return
+        student_name = (student.get("full_name") or f"Студент #{student_id}").strip()
+
+        topics = await self._api_get(f"/api/user-topics/{viewer_id}?limit=50") or []
+        role_options: List[tuple[int, int, str, str]] = []
+        for topic in topics:
+            if not (topic.get("is_author") or topic.get("is_approved_supervisor")):
+                continue
+            tid = self._parse_positive_int(topic.get("id"))
+            if tid is None:
+                continue
+            topic_title = (topic.get("title") or f"Тема #{tid}").strip() or f"Тема #{tid}"
+            roles_raw = await self._api_get(f"/api/topics/{tid}/roles") or []
+            for role in roles_raw:
+                if self._is_member_role(role):
+                    continue
+                rid = self._parse_positive_int(role.get("id"))
+                if rid is None:
+                    continue
+                role_name = (role.get("name") or f"Роль #{rid}").strip() or f"Роль #{rid}"
+                role_options.append((rid, tid, topic_title, role_name))
+
+        if not role_options:
+            await q.edit_message_text(
+                self._fix_text("У вас нет активных ролей для приглашения. Добавьте роль в своей теме.")
+            )
+            return
+
+        lines = [
+            f"Кого приглашаем: {student_name} (id={student_id})",
+            "",
+            "Выберите роль для приглашения:",
+        ]
+        kb: List[List[InlineKeyboardButton]] = []
+        for rid, tid, topic_title, role_name in role_options[:50]:
+            label = f"{role_name} — {topic_title}"
+            kb.append(
+                [
+                    InlineKeyboardButton(
+                        self._fix_text(label[:64]), callback_data=f"invite_student_role_{rid}_{student_id}"
+                    )
+                ]
+            )
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"student_{student_id}")])
+        await q.edit_message_text(self._fix_text("\n".join(lines)), reply_markup=self._mk(kb))
+
+    async def cb_invite_student_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Открывает форму сообщения для приглашения студента на конкретную роль."""
+        q = update.callback_query
+        await self._answer_callback(q)
+        parts = (q.data or "").split("_")
+        rid = None
+        sid = None
+        if len(parts) >= 4:
+            try:
+                rid = int(parts[-2])
+                sid = int(parts[-1])
+            except Exception:
+                rid = None
+                sid = None
+        if rid is None or sid is None:
+            await q.edit_message_text(self._fix_text("Некорректные параметры приглашения."))
+            return
+
+        viewer_id = context.user_data.get("uid")
+        viewer_role = self._normalize_role_value(context.user_data.get("role"))
+        is_admin = self._is_admin(update)
+        if not viewer_id:
+            await q.edit_message_text(self._fix_text("Сначала подтвердите профиль через /start."))
+            return
+
+        role = await self._api_get(f"/api/roles/{rid}")
+        if not role:
+            await q.edit_message_text(self._fix_text("Роль не найдена или недоступна."))
+            return
+        topic_id = self._parse_positive_int(role.get("topic_id"))
+        if topic_id is None:
+            await q.edit_message_text(self._fix_text("Не удалось определить тему роли."))
+            return
+
+        author_id = role.get("author_user_id")
+        allowed = False
+        if is_admin:
+            allowed = True
+        elif viewer_role == "supervisor":
+            try:
+                allowed = int(author_id) == int(viewer_id)
+            except Exception:
+                allowed = author_id == viewer_id
+            if not allowed:
+                topics_raw = await self._api_get(f"/api/user-topics/{viewer_id}?limit=200") or []
+                for t in topics_raw:
+                    tid = self._parse_positive_int(t.get("id"))
+                    if tid == topic_id and (t.get("is_author") or t.get("is_approved_supervisor")):
+                        allowed = True
+                        break
+        if not allowed:
+            await q.edit_message_text(self._fix_text("Приглашать можно только к своим темам и ролям."))
+            return
+        if self._ids_equal(viewer_id, sid):
+            await q.edit_message_text(self._fix_text("Нельзя приглашать самого себя."))
+            return
+
+        student = await self._api_get(f"/api/students/{sid}")
+        if not student:
+            await q.edit_message_text(self._fix_text("Профиль студента не найден."))
+            return
+        receiver_name = (student.get("full_name") or f"Студент #{sid}").strip() or f"Студент #{sid}"
+
+        topic_title = role.get("topic_title") or (f"Тема #{topic_id}" if topic_id else "тема")
+        raw_role_name = (role.get("name") or "").strip() or f"Роль #{rid}"
+        role_name = self._display_role_name(raw_role_name, topic_title, viewer_role)
+
+        default_body = (
+            f'Здравствуйте! Приглашаю вас на роль "{role_name}" по теме "{topic_title}". '
+            "Если предложение интересно, ответьте на это сообщение."
+        )
+        prompt = (
+            f"Напишите приглашение студенту {receiver_name} на роль «{role_name}» по теме «{topic_title}».\n"
+            "Можно отправить «-», чтобы использовать шаблон. Для отмены — /start."
+        )
+        payload: Dict[str, Any] = {
+            "sender_user_id": str(viewer_id),
+            "receiver_user_id": str(sid),
+            "role_id": str(rid),
+            "topic_id": str(topic_id),
+            "topic_title": topic_title,
+            "role_name": role_name,
+            "receiver_name": receiver_name,
+            "default_body": default_body,
+            "return_callback": f"student_{sid}",
+            "source": "student_invite",
+        }
+        context.user_data["application_payload"] = payload
+        context.user_data["awaiting"] = "submit_application_body"
+        await q.message.reply_text(self._fix_text(prompt))
 
     async def cb_student_cv(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_student_cv."""
@@ -1245,7 +1409,8 @@ class EntityHandlers(BaseHandlers):
         if not msg:
             await q.edit_message_text(self._fix_text('Заявка не найдена. Обновите список.'))
             return
-        text, kb = self._build_message_view(msg, uid, notice=notice)
+        viewer_role = self._normalize_role_value(context.user_data.get("role"))
+        text, kb = self._build_message_view(msg, uid, viewer_role=viewer_role, notice=notice)
         await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
 
     async def cb_message_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1284,12 +1449,65 @@ class EntityHandlers(BaseHandlers):
         }
         msg = await self._get_message_details(context, uid, mid, refresh=True)
         if msg:
-            text, kb = self._build_message_view(msg, uid, notice=notice_map.get(action))
+            viewer_role = self._normalize_role_value(context.user_data.get("role"))
+            text, kb = self._build_message_view(msg, uid, viewer_role=viewer_role, notice=notice_map.get(action))
             await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
         else:
             fallback = notice_map.get(action) or 'Заявка обновлена.'
             kb = [[InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')]]
             await q.edit_message_text(self._fix_text(fallback), reply_markup=self._mk(kb))
+
+    async def cb_message_clear_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Снимает утверждение студента на роль из карточки заявки."""
+        q = update.callback_query
+        await self._answer_callback(q)
+        data = (q.data or "").split("_")
+        if len(data) < 3:
+            await q.edit_message_text(self._fix_text("Некорректный запрос."))
+            return
+        try:
+            mid = int(data[2])
+        except Exception:
+            await q.answer(text=self._fix_text("Некорректный идентификатор заявки."), show_alert=True)
+            return
+        viewer_id = context.user_data.get("uid")
+        viewer_role = self._normalize_role_value(context.user_data.get("role"))
+        if viewer_id is None:
+            await q.answer(text=self._fix_text("Не удалось определить пользователя. Запустите /start."), show_alert=True)
+            return
+        msg = await self._get_message_details(context, viewer_id, mid, refresh=True)
+        if not msg:
+            await q.answer(text=self._fix_text("Заявка не найдена. Обновите список."), show_alert=True)
+            return
+        role_id = self._parse_positive_int(msg.get("role_id"))
+        if role_id is None:
+            await q.answer(text=self._fix_text("У заявки нет роли, снять нечего."), show_alert=True)
+            return
+        status_val = (msg.get("status") or "").lower()
+        if status_val != "accepted":
+            await q.answer(text=self._fix_text("Снять утверждение можно только для принятой заявки."), show_alert=True)
+            return
+        sender_id = msg.get("sender_user_id")
+        receiver_id = msg.get("receiver_user_id")
+        other_id = receiver_id if self._ids_equal(viewer_id, sender_id) else sender_id if self._ids_equal(viewer_id, receiver_id) else None
+        target_student_id = viewer_id if viewer_role == "student" else other_id or viewer_id
+        payload = {"by_user_id": str(viewer_id)}
+        if target_student_id is not None and not self._ids_equal(target_student_id, viewer_id):
+            payload["student_id"] = str(target_student_id)
+        res = await self._api_post(f"/api/roles/{role_id}/clear-approved", data=payload)
+        if not res or res.get("status") != "ok":
+            msg_text = (res or {}).get("message") or "Не удалось снять утверждение."
+            await q.answer(text=self._fix_text(msg_text), show_alert=True)
+            return
+        await q.answer()
+        notice = "🚫 Утверждение по роли снято."
+        msg = await self._get_message_details(context, viewer_id, mid, refresh=True)
+        if msg:
+            text, kb = self._build_message_view(msg, viewer_id, viewer_role=viewer_role, notice=notice)
+            await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
+        else:
+            kb = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]]
+            await q.edit_message_text(self._fix_text(notice), reply_markup=self._mk(kb))
 
     def _store_messages_cache(self, context: ContextTypes.DEFAULT_TYPE, messages: List[Dict[str, Any]], *, source: str, list_callback: str) -> None:
         """Выполняет функцию _store_messages_cache."""
@@ -1327,6 +1545,7 @@ class EntityHandlers(BaseHandlers):
         self,
         message: Dict[str, Any],
         viewer_id: Any,
+        viewer_role: Optional[str] = None,
         notice: Optional[str] = None,
     ) -> tuple[str, List[List[InlineKeyboardButton]]]:
         """Выполняет функцию _build_message_view."""
@@ -1336,6 +1555,7 @@ class EntityHandlers(BaseHandlers):
             'rejected': 'отклонена',
             'canceled': 'отменена',
         }
+        viewer_role_norm = self._normalize_role_value(viewer_role)
         lines: List[str] = []
         if notice:
             lines.append(notice)
@@ -1350,6 +1570,7 @@ class EntityHandlers(BaseHandlers):
         receiver_name = message.get('receiver_name') or message.get('receiver_full_name') or ''
         sender_id = message.get('sender_user_id')
         receiver_id = message.get('receiver_user_id')
+        role_id_val = self._parse_positive_int(message.get('role_id'))
         sender_line = sender_name or f'#{sender_id}'
         receiver_line = receiver_name or f'#{receiver_id}'
         lines.append(f'От: {sender_line} (id={sender_id})')
@@ -1367,14 +1588,11 @@ class EntityHandlers(BaseHandlers):
         if answer:
             lines.append('')
             lines.append('Ответ:')
-            lines.append(answer)
+        lines.append(answer)
         kb: List[List[InlineKeyboardButton]] = []
         def _same_user(a: Any, b: Any) -> bool:
             """Выполняет функцию _same_user."""
-            try:
-                return int(a) == int(b)
-            except Exception:
-                return a == b
+            return self._ids_equal(a, b)
         if status_val == 'pending':
             if _same_user(receiver_id, viewer_id):
                 kb.append([
@@ -1383,6 +1601,10 @@ class EntityHandlers(BaseHandlers):
                 ])
             elif _same_user(sender_id, viewer_id):
                 kb.append([InlineKeyboardButton('🚫 Отменить', callback_data=f'message_cancel_{msg_id}')])
+        if status_val == 'accepted' and role_id_val:
+            if _same_user(sender_id, viewer_id) or _same_user(receiver_id, viewer_id):
+                label = '🚫 Отказаться от роли' if viewer_role_norm == 'student' else '🚫 Снять студента с роли'
+                kb.append([InlineKeyboardButton(label, callback_data=f'message_drop_{msg_id}')])
         source = message.get('__source') or ('inbox' if _same_user(receiver_id, viewer_id) else 'outbox')
         back_cb = message.get('__list_callback')
         if not back_cb:
@@ -1397,11 +1619,11 @@ class EntityHandlers(BaseHandlers):
         q = update.callback_query; await self._answer_callback(q)
         cfg = await self._api_get('/api/sheets-config')
         if not cfg or cfg.get('status') != 'configured':
-            text = 'Google Sheets не настроен. Укажите SPREADSHEET_ID и SERVICE_ACCOUNT_FILE на сервере.'
+            text = 'Google Sheets не настроен. Укажите STUDENT_SPREADSHEET_ID и SERVICE_ACCOUNT_FILE на сервере.'
             kb = [[InlineKeyboardButton('👨‍🎓 К студентам', callback_data='list_students')]]
             await q.edit_message_text(self._fix_text(text), reply_markup=self._mk(kb))
             return
-        sid = cfg.get('spreadsheet_id')
+        sid = cfg.get('student_spreadsheet_id') or cfg.get('spreadsheet_id')
                                                               
         try:
             await q.edit_message_text(self._fix_text('Import started... This may take up to 2-3 minutes.'))
@@ -1456,7 +1678,10 @@ class EntityHandlers(BaseHandlers):
         q = update.callback_query; await self._answer_callback(q)
         data = await self._api_get('/api/topics?limit=10') or []
         lines: List[str] = ['Темы:']
-        kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Тема', callback_data='add_topic')]]
+        kb: List[List[InlineKeyboardButton]] = []
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        if self._is_admin(update) or viewer_role != 'student':
+            kb.append([InlineKeyboardButton('➕ Тема', callback_data='add_topic')])
         for t in data:
             lines.append(f"• {t.get('title','–')} (id={t.get('id')})")
             kb.append([InlineKeyboardButton(((t.get('title') or '–')[:30]), callback_data=f"topic_{t.get('id')}")])
@@ -1535,7 +1760,10 @@ class EntityHandlers(BaseHandlers):
         limit = 10
         data = await self._api_get(f'/api/topics?limit={limit}&offset={max(0, offset)}') or []
         lines: List[str] = ['Темы:']
-        kb: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton('➕ Тема', callback_data='add_topic')]]
+        kb: List[List[InlineKeyboardButton]] = []
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        if self._is_admin(update) or viewer_role != 'student':
+            kb.append([InlineKeyboardButton('➕ Тема', callback_data='add_topic')])
         for t in data:
             title = (t.get('title') or '–')[:30]
             lines.append(f"• {t.get('title','–')} (id={t.get('id')})")
@@ -1547,6 +1775,38 @@ class EntityHandlers(BaseHandlers):
         if len(data) == limit:
             next_off = offset + limit
             nav.append(InlineKeyboardButton('▶️', callback_data=f'list_topics_{next_off}'))
+        if nav:
+            kb.append(nav)
+        kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
+        await q.edit_message_text(self._fix_text('\n'.join(lines)), reply_markup=self._mk(kb))
+
+    async def cb_list_roles_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает доступные роли (активные темы, есть свободные места)."""
+        q = update.callback_query; await self._answer_callback(q)
+        offset = 0
+        try:
+            if '_' in (q.data or '') and q.data != 'list_roles':
+                offset = int(q.data.rsplit('_', 1)[1])
+        except Exception:
+            offset = 0
+        limit = 10
+        data = await self._api_get(f'/api/roles/available?limit={limit}&offset={max(0, offset)}') or []
+        lines: List[str] = ['Доступные роли:']
+        kb: List[List[InlineKeyboardButton]] = []
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        for r in data:
+            role_name = (r.get('name') or '–').strip() or '–'
+            topic_title = (r.get('topic_title') or '–').strip() or '–'
+            display_name = self._display_role_name(role_name, topic_title, viewer_role)
+            lines.append(f"• {display_name} — {topic_title}")
+            kb.append([InlineKeyboardButton(display_name[:40] or 'Роль', callback_data=f"role_{r.get('id')}")])
+        nav: List[InlineKeyboardButton] = []
+        if offset > 0:
+            prev_off = max(0, offset - limit)
+            nav.append(InlineKeyboardButton('◀️', callback_data=f'list_roles_{prev_off}'))
+        if len(data) == limit:
+            next_off = offset + limit
+            nav.append(InlineKeyboardButton('▶️', callback_data=f'list_roles_{next_off}'))
         if nav:
             kb.append(nav)
         kb.append([InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')])
@@ -1569,19 +1829,38 @@ class EntityHandlers(BaseHandlers):
     async def cb_add_topic_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_add_topic_start."""
         q = update.callback_query; await self._answer_callback(q)
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        if not self._is_admin(update) and viewer_role == 'student':
+            kb = [[InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')]]
+            await q.edit_message_text(
+                self._fix_text('Студенты не могут создавать темы. Обратитесь к руководителю или администратору.'),
+                reply_markup=self._mk(kb),
+            )
+            return
         context.user_data['add_topic_payload'] = {}
         context.user_data['add_topic_endpoint'] = None
-        kb = [
-            [InlineKeyboardButton('🎓 Ищу студента', callback_data='add_topic_role_student')],
-            [InlineKeyboardButton('🧑‍🏫 Ищу научного руководителя', callback_data='add_topic_role_supervisor')],
-            [InlineKeyboardButton('📚 К темам', callback_data='list_topics')],
-        ]
-        await q.edit_message_text(self._fix_text('Выберите, кого ищет тема:'), reply_markup=self._mk(kb))
+        # Всегда ищем студентов
+        context.user_data['awaiting'] = 'add_topic_title'
+        payload = context.user_data.get('add_topic_payload') or {}
+        payload['seeking_role'] = 'student'
+        context.user_data['add_topic_payload'] = payload
+        await q.edit_message_text(
+            self._fix_text('Введите название темы сообщением. После этого мы уточним описание и другие поля. Для отмены — /start'),
+            reply_markup=self._mk([[InlineKeyboardButton('📚 К темам', callback_data='list_topics')]]),
+        )
 
     async def cb_add_topic_choose(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_add_topic_choose."""
         q = update.callback_query; await self._answer_callback(q)
-        role = 'student' if q.data.endswith('_student') else 'supervisor'
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        if not self._is_admin(update) and viewer_role == 'student':
+            kb = [[InlineKeyboardButton('⬅️ Назад', callback_data='back_to_main')]]
+            await q.edit_message_text(
+                self._fix_text('Студенты не могут создавать темы. Обратитесь к руководителю или администратору.'),
+                reply_markup=self._mk(kb),
+            )
+            return
+        role = 'student'
         context.user_data['awaiting'] = 'add_topic_title'
         context.user_data['topic_role'] = role
         payload = context.user_data.get('add_topic_payload') or {}
@@ -1677,7 +1956,7 @@ class EntityHandlers(BaseHandlers):
             except Exception:
                 pass
             source = payload_copy.get('source')
-            if source == 'supervisor_invite':
+            if source in {'supervisor_invite', 'student_invite'}:
                 success_lines = ['✅ Приглашение отправлено.']
             else:
                 success_lines = ['✅ Заявка отправлена.']
@@ -1699,6 +1978,8 @@ class EntityHandlers(BaseHandlers):
                     label = '⬅️ К роли'
                 elif source == 'supervisor_invite':
                     label = '⬅️ К руководителю'
+                elif source == 'student_invite':
+                    label = '⬅️ К студенту'
                 else:
                     label = '⬅️ К теме'
                 kb.append([InlineKeyboardButton(label, callback_data=return_cb)])
@@ -2090,6 +2371,16 @@ class EntityHandlers(BaseHandlers):
 
     async def _finish_add_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Выполняет функцию _finish_add_topic."""
+        viewer_role = self._normalize_role_value(context.user_data.get('role'))
+        if not self._is_admin(update) and viewer_role == 'student':
+            await update.message.reply_text(
+                self._fix_text('Студенты не могут создавать темы. Действие отменено.')
+            )
+            context.user_data['awaiting'] = None
+            context.user_data.pop('topic_role', None)
+            context.user_data.pop('add_topic_payload', None)
+            context.user_data.pop('add_topic_endpoint', None)
+            return
         payload: Dict[str, Any] = context.user_data.get('add_topic_payload') or {}
         endpoint = context.user_data.get('add_topic_endpoint') or '/api/add-topic'
         data: Dict[str, Any] = {}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Optional
 
 from telegram import InlineKeyboardButton, Update
@@ -98,23 +99,18 @@ class MenuHandlers(BaseHandlers):
                 await self._show_role_menu(update, context)
                 return
         if not matches:
-            text = "Мы не нашли вашу запись из формы. Вы студент или научный руководитель?"
-            kb = [
-                [InlineKeyboardButton("👨‍🎓 Студент", callback_data="register_role_student")],
-                [
-                    InlineKeyboardButton(
-                        "🧑‍🏫 Научный руководитель", callback_data="register_role_supervisor"
-                    )
-                ],
-            ]
+            reg_link = os.getenv("REGISTRATION_FORM_URL")
+            text = (
+                "Мы не нашли вашу запись из формы. "
+                "Чтобы продолжить использовать бота, зарегистрируйтесь через форму и дождитесь импорта. "
+                "После регистрации нажмите /start."
+            )
+            if reg_link:
+                text = f"{text}\n\nСсылка на форму: {reg_link}"
             if update.message:
-                await update.message.reply_text(
-                    self._fix_text(text), reply_markup=self._mk(kb)
-                )
+                await update.message.reply_text(self._fix_text(text))
             else:
-                await update.callback_query.edit_message_text(
-                    self._fix_text(text), reply_markup=self._mk(kb)
-                )
+                await update.callback_query.edit_message_text(self._fix_text(text))
             return
 
         lines = ["Найдены записи. Это вы?"]
@@ -155,14 +151,13 @@ class MenuHandlers(BaseHandlers):
         context.user_data.pop("student_match_back", None)
         if role == "student":
             browse_rows = [
-                [InlineKeyboardButton("👨‍🎓 Студенты", callback_data="list_students")],
                 [InlineKeyboardButton("🧑‍🏫 Научные руководители", callback_data="list_supervisors")],
                 [InlineKeyboardButton("📚 Темы", callback_data="list_topics")],
             ]
             kb = [
                 [InlineKeyboardButton("👤 Мой профиль", callback_data="student_me")],
                 [InlineKeyboardButton("📚 Мои темы", callback_data="my_topics")],
-                [InlineKeyboardButton("➕ Добавить тему", callback_data="add_topic")],
+                [InlineKeyboardButton("📜 Все роли", callback_data="list_roles")],
                 [
                     InlineKeyboardButton(
                         "🧠 Подобрать роли для меня", callback_data=f"match_student_{uid}"
@@ -212,10 +207,9 @@ class MenuHandlers(BaseHandlers):
             return None
         try:
             total = int(stats.get("total", 0))
-            available = int(stats.get("available", 0))
         except (TypeError, ValueError):
             return None
-        return f"Осталось свободных ролей {available}/{total}"
+        return f"Всего ролей: {total}"
 
     async def cb_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выполняет функцию cb_back."""

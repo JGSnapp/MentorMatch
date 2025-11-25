@@ -13,8 +13,6 @@ from ..services.matching_client import (
     refresh_topic_embedding,
     refresh_role_embedding,
 )
-from ..utils.topic_extraction import extract_topics_from_text, fallback_extract_topics
-
 logger = logging.getLogger(__name__)
 
 MEMBER_ROLE_NAME = '%member'
@@ -109,6 +107,42 @@ def _comma_join(items: Optional[Sequence[str]]) -> Optional[str]:
     return ", ".join(parts) or None
 
 
+def _normalize_theme(value: Optional[str]) -> Optional[str]:
+    """Возвращает аккуратно обрезанное название темы или None."""
+    if value is None:
+        return None
+    theme = str(value).strip()
+    return theme or None
+
+
+def _normalize_roles(values: Optional[Sequence[str]]) -> List[str]:
+    """Нормализует список ролей, удаляя пустые и дубликаты (без учёта регистра)."""
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = _split_roles_raw(values)
+    result: List[str] = []
+    seen: Set[str] = set()
+    for val in values:
+        name = str(val or '').strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(name)
+    return result
+
+
+def _split_roles_raw(raw: Optional[str]) -> List[str]:
+    """Быстрый парсер списка ролей из строки (разделители: запятая, точка с запятой и пр.)."""
+    if not raw:
+        return []
+    parts = re.split(r"[;,/|]\s*|\s{2,}", str(raw).strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
                                                     
 def import_students(
     conn: connection,
@@ -172,6 +206,11 @@ def import_students(
             skills_want = _comma_join(row.get("hard_skills_want"))
             interests = _comma_join(row.get("interests"))
             cv_value = process_cv(conn, user_id, row.get("cv"))
+            theme_name = _normalize_theme(row.get('requested_theme') or row.get('thematic_choice'))
+            requested_roles = _normalize_roles(row.get('requested_roles'))
+            if not requested_roles and row.get('team_role'):
+                requested_roles = _normalize_roles(_split_roles_raw(row.get('team_role')))
+
             profile_values = {
                 'submitted_at': row.get('timestamp'),
                 'isu_number': row.get('isu_number'),
@@ -201,8 +240,8 @@ def import_students(
                 'team_leadership_level': row.get('team_leadership_level'),
                 'apply_master': row.get('apply_master'),
                 'hours_per_week': row.get('hours_per_week'),
-                'thematic_choice': row.get('thematic_choice'),
-                'team_role': row.get('team_role'),
+                'thematic_choice': None,
+                'team_role': None,
                 'plan_for_lab': row.get('plan_for_lab'),
                 'motivation_letter': row.get('motivation_letter'),
                 'police_clearance': row.get('police_clearance'),
@@ -225,6 +264,16 @@ def import_students(
             )
             needs_student_refresh = True
             inserted_profiles += 1
+            if theme_name and requested_roles:
+                for role_name in requested_roles:
+                    cur.execute(
+                        """
+                        INSERT INTO requested_roles(student_id, theme_name, role_name)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (student_id, theme_name, role_name) DO NOTHING
+                        """,
+                        (user_id, theme_name, role_name),
+                    )
             if needs_student_refresh:
                 student_refresh_queue.add(user_id)
 
@@ -252,8 +301,10 @@ def import_supervisors(
     inserted_users = 0
     upserted_profiles = 0
     inserted_topics = 0
+    inserted_roles = 0
     supervisor_refresh_queue: Set[int] = set()
     topic_refresh_queue: Set[int] = set()
+    role_refresh_queue: Set[int] = set()
 
     with conn.cursor() as cur:
         for row in rows:
@@ -307,17 +358,17 @@ def import_supervisors(
 
             cur.execute("SELECT 1 FROM supervisor_profiles WHERE user_id=%s", (user_id,))
             profile_exists = cur.fetchone() is not None
-            interests = row.get("area") or None
-            requirements = row.get("extra_info") or None
+            capacity_val = None
+            requirements_val = row.get("required_skills")
 
             if profile_exists:
                 cur.execute(
                     """
                     UPDATE supervisor_profiles
-                    SET interests=%s, requirements=%s
+                    SET capacity=%s, requirements=%s
                     WHERE user_id=%s
                     """,
-                    (interests, requirements, user_id),
+                    (capacity_val, requirements_val, user_id),
                 )
                 needs_supervisor_refresh = True
             else:
@@ -326,58 +377,90 @@ def import_supervisors(
                     INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (user_id, None, None, None, interests, requirements),
+                    (user_id, None, None, capacity_val, None, requirements_val),
                 )
                 needs_supervisor_refresh = True
             upserted_profiles += 1
 
-                                                                      
-            def _insert_from_text(text: Optional[str], direction: Optional[int]) -> None:
-                """Разбирает текст описания и добавляет темы наставника в базу."""
-                nonlocal inserted_topics
-                if not text or not text.strip():
-                    return
-                topics = extract_topics_from_text(text) or fallback_extract_topics(text)
-                for topic in topics:
-                    title = (topic.get("title") or "").strip()
-                    if not title:
-                        continue
+            title = (row.get("topic_title") or "").strip()
+            if title:
+                cur.execute(
+                    "SELECT id FROM topics WHERE author_user_id=%s AND title=%s LIMIT 1",
+                    (user_id, title),
+                )
+                topic_row = cur.fetchone()
+                if topic_row:
+                    topic_id = topic_row[0]
                     cur.execute(
-                        "SELECT 1 FROM topics WHERE author_user_id=%s AND title=%s AND (direction IS NOT DISTINCT FROM %s)",
-                        (user_id, title, direction),
+                        """
+                        UPDATE topics
+                        SET description=%s,
+                            expected_outcomes=%s,
+                            required_skills=%s,
+                            seeking_role='student',
+                            updated_at=now()
+                        WHERE id=%s
+                        """,
+                        (
+                            row.get("topic_description"),
+                            row.get("expected_outcomes"),
+                            row.get("required_skills"),
+                            topic_id,
+                        ),
                     )
-                    if cur.fetchone():
-                        continue
+                else:
                     cur.execute(
                         """
                         INSERT INTO topics(author_user_id, title, description, expected_outcomes,
-                                           required_skills, direction, seeking_role, is_active, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, 'student', TRUE, now(), now())
+                                           required_skills, direction, seeking_role, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'student', now(), now())
                         RETURNING id
                         """,
                         (
                             user_id,
                             title,
-                            topic.get("description"),
-                            topic.get("expected_outcomes"),
-                            topic.get("required_skills"),
-                            direction,
+                            row.get("topic_description"),
+                            row.get("expected_outcomes"),
+                            row.get("required_skills"),
+                            None,
                         ),
                     )
                     inserted_topic_row = cur.fetchone()
-                    if inserted_topic_row:
-                        topic_id = inserted_topic_row[0]
-                        topic_refresh_queue.add(topic_id)
-                        member_role_id = _ensure_member_role(cur, topic_id)
-                        if member_role_id:
-                            refresh_role_embedding(member_role_id)
+                    topic_id = inserted_topic_row[0]
                     inserted_topics += 1
+                topic_refresh_queue.add(topic_id)
+                member_role_id = _ensure_member_role(cur, topic_id)
+                if member_role_id:
+                    role_refresh_queue.add(member_role_id)
 
-            _insert_from_text(row.get("topics_09"), 9)
-            _insert_from_text(row.get("topics_11"), 11)
-            _insert_from_text(row.get("topics_45"), 45)
-            if not any((row.get("topics_09"), row.get("topics_11"), row.get("topics_45"))):
-                _insert_from_text(row.get("topics_text"), None)
+                roles = _normalize_roles(row.get("required_roles"))
+                for role_name in roles:
+                    cur.execute(
+                        "SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1",
+                        (topic_id, role_name),
+                    )
+                    role_row = cur.fetchone()
+                    if role_row:
+                        role_refresh_queue.add(role_row[0])
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, now(), now())
+                        RETURNING id
+                        """,
+                        (
+                            topic_id,
+                            role_name,
+                            None,
+                            row.get("required_skills"),
+                            None,
+                        ),
+                    )
+                    role_inserted = cur.fetchone()
+                    if role_inserted:
+                        inserted_roles += 1
+                        role_refresh_queue.add(role_inserted[0])
             if needs_supervisor_refresh:
                 supervisor_refresh_queue.add(user_id)
 
@@ -386,20 +469,24 @@ def import_supervisors(
         refresh_supervisor_embedding(supervisor_id)
     for topic_id in topic_refresh_queue:
         refresh_topic_embedding(topic_id)
+    for role_id in role_refresh_queue:
+        refresh_role_embedding(role_id)
     return {
         "status": "success",
         "message": (
             "Импорт научруков завершён: новых пользователей {users}, обновлено профилей {profiles},"
-            " добавлено тем {topics}."
+            " добавлено тем {topics}, добавлено ролей {roles}."
         ).format(
             users=inserted_users,
             profiles=upserted_profiles,
             topics=inserted_topics,
+            roles=inserted_roles,
         ),
         "stats": {
             "inserted_users": inserted_users,
             "upserted_profiles": upserted_profiles,
             "inserted_topics": inserted_topics,
+            "inserted_roles": inserted_roles,
         },
     }
 

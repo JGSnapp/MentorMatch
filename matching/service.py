@@ -35,7 +35,10 @@ logger = logging.getLogger(__name__)
 
 def _pick_llm(llm: Optional[MatchingLLMClient]) -> Optional[MatchingLLMClient]:
     """Выполняет функцию _pick_llm."""
-    return llm or create_matching_llm_client()
+    picked = llm or create_matching_llm_client()
+    if picked is None:
+        logger.warning("LLM недоступен: используем фолбэк ранжирования")
+    return picked
 
 
 def _enrich_cv(conn: connection, candidates: List[Dict[str, Any]]) -> None:

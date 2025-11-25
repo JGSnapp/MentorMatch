@@ -225,7 +225,7 @@ def register(router: APIRouter, ctx: AdminContext) -> None:
                 "limit": PAGE_LIMIT,
                 "has_prev": has_prev,
                 "has_next": has_next,
-                "spreadsheet_id": os.getenv("SPREADSHEET_ID", ""),
+                "spreadsheet_id": os.getenv("STUDENT_SPREADSHEET_ID", "") or os.getenv("SPREADSHEET_ID", ""),
             },
         )
 

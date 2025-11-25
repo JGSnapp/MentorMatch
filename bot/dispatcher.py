@@ -25,6 +25,9 @@ def setup(application: Application, bot) -> None:
         CallbackQueryHandler(bot.cb_list_topics_nav, pattern=r"^list_topics(?:_\d+)?$")
     )
     application.add_handler(
+        CallbackQueryHandler(bot.cb_list_roles_nav, pattern=r"^list_roles(?:_\d+)?$")
+    )
+    application.add_handler(
         CallbackQueryHandler(bot.cb_import_students, pattern=r"^import_students$")
     )
 
@@ -54,6 +57,9 @@ def setup(application: Application, bot) -> None:
         CallbackQueryHandler(bot.cb_student_cv, pattern=r"^student_cv_\d+$")
     )
     application.add_handler(
+        CallbackQueryHandler(bot.cb_invite_student_start, pattern=r"^invite_student_\d+$")
+    )
+    application.add_handler(
         CallbackQueryHandler(bot.cb_view_supervisor, pattern=r"^supervisor_\d+$")
     )
     application.add_handler(CallbackQueryHandler(bot.cb_view_topic, pattern=r"^topic_\d+$"))
@@ -62,6 +68,11 @@ def setup(application: Application, bot) -> None:
     application.add_handler(CallbackQueryHandler(bot.cb_apply_role, pattern=r"^apply_role_\d+$"))
     application.add_handler(
         CallbackQueryHandler(bot.cb_invite_supervisor, pattern=r"^invite_supervisor_\d+_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            bot.cb_invite_student_role, pattern=r"^invite_student_role_\d+_\d+$"
+        )
     )
     application.add_handler(
         CallbackQueryHandler(bot.cb_edit_student_start, pattern=r"^edit_student_\d+$")
@@ -119,6 +130,9 @@ def setup(application: Application, bot) -> None:
             bot.cb_message_action,
             pattern=r"^message_(?:accept|reject|cancel)_\d+$",
         )
+    )
+    application.add_handler(
+        CallbackQueryHandler(bot.cb_message_clear_role, pattern=r"^message_drop_\d+$")
     )
 
     application.add_handler(CallbackQueryHandler(bot.cb_back, pattern=r"^back_to_main$"))

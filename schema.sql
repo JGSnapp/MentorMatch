@@ -113,14 +113,12 @@ CREATE TABLE topics (
   embeddings        VECTOR,
   cover_media_id    BIGINT REFERENCES media_files(id) ON DELETE SET NULL,
   approved_supervisor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
-  is_active         BOOLEAN NOT NULL DEFAULT TRUE,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_topics_author ON topics(author_user_id);
 CREATE INDEX idx_topics_seeking_role ON topics(seeking_role);
-CREATE INDEX idx_topics_active ON topics(is_active);
 CREATE INDEX idx_topics_direction ON topics(direction);
 
 CREATE TABLE topic_candidates (
@@ -181,6 +179,16 @@ CREATE TABLE approved_students (
 
 CREATE INDEX idx_approved_students_role ON approved_students(role_id);
 CREATE INDEX idx_approved_students_student ON approved_students(student_id);
+
+CREATE TABLE requested_roles (
+  id         BIGSERIAL PRIMARY KEY,
+  student_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  theme_name TEXT NOT NULL,
+  role_name  TEXT NOT NULL,
+  UNIQUE(student_id, theme_name, role_name)
+);
+
+CREATE INDEX idx_requested_roles_student ON requested_roles(student_id);
 
 -- Students recommended for a role (matching: role -> students)
 CREATE TABLE role_candidates (
