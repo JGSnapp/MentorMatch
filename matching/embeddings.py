@@ -253,14 +253,6 @@ def _build_entity_text(entity: Union[Mapping[str, Any], Any], entity_type: str) 
         raise ValueError(f"Unsupported entity type: {entity_type}")
 
     pieces: List[Any] = []
-    if entity_type in {"student", "supervisor"}:
-        pieces.extend(
-            [
-                _extract_value(entity, "full_name"),
-                _extract_value(entity, "email"),
-                _extract_value(entity, "username"),
-            ]
-        )
 
     if entity_type == "student":
         pieces.extend(
@@ -297,7 +289,6 @@ def _build_entity_text(entity: Union[Mapping[str, Any], Any], entity_type: str) 
                 _extract_value(entity, "plan_for_lab"),
                 _extract_value(entity, "motivation_letter"),
                 _extract_value(entity, "police_clearance"),
-                _extract_value(entity, "cv"),
             ]
         )
     elif entity_type == "supervisor":

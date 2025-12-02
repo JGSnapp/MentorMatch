@@ -27,7 +27,7 @@ def _fetch_students(conn, offset: int, limit: int) -> Tuple[List[Dict[str, Any]]
             FROM users u
             LEFT JOIN student_profiles sp ON sp.user_id = u.id
             WHERE u.role = 'student'
-            ORDER BY u.created_at DESC
+            ORDER BY u.id ASC
             OFFSET %s LIMIT %s
             """,
             (offset, limit + 1),
@@ -46,7 +46,7 @@ def _fetch_supervisors(conn, offset: int, limit: int) -> Tuple[List[Dict[str, An
             FROM users u
             LEFT JOIN supervisor_profiles sup ON sup.user_id = u.id
             WHERE u.role = 'supervisor'
-            ORDER BY u.created_at DESC
+            ORDER BY u.id ASC
             OFFSET %s LIMIT %s
             """,
             (offset, limit + 1),
@@ -64,7 +64,7 @@ def _fetch_topics(conn, offset: int, limit: int) -> Tuple[List[Dict[str, Any]], 
                    u.full_name AS author
             FROM topics t
             JOIN users u ON u.id = t.author_user_id
-            ORDER BY t.created_at DESC
+            ORDER BY t.id ASC
             OFFSET %s LIMIT %s
             """,
             (offset, limit + 1),

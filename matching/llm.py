@@ -208,9 +208,48 @@ class MatchingLLMClient:
             expected_count=expected_count,
         )
 
-    def rank_roles(self, payload_json: str) -> Optional[List[ParsedItem]]:
+    def rank_roles(self, payload: Dict[str, Any]) -> Optional[List[ParsedItem]]:
         """Выполняет функцию rank_roles."""
         expected_count = 5
+
+        def _format_human_prompt(data: Dict[str, Any]) -> str:
+            """Преобразует payload в удобочитаемый список ролей для модели."""
+            student = data.get("student") or {}
+            student_lines = [
+                f"Имя: {student.get('full_name') or '—'}",
+                f"Направление: {student.get('direction') or '—'}",
+                f"Навыки: {student.get('skills') or '—'}",
+                f"Хочет прокачать: {student.get('skills_to_learn') or '—'}",
+                f"Интересы: {student.get('interests') or '—'}",
+            ]
+            roles = data.get("roles") or []
+            role_lines = []
+            for role in roles:
+                role_lines.append(
+                    "\n".join(
+                        [
+                            f"Роль {role.get('num')}: {role.get('role_name') or '—'}",
+                            f"Описание роли: {role.get('role_description') or '—'}",
+                            f"Тема: {role.get('topic_title') or '—'}",
+                            f"Описание темы: {role.get('topic_description') or '—'}",
+                            f"Требования: {role.get('role_required_skills') or '—'}",
+                            f"Требования темы: {role.get('topic_required_skills') or '—'}",
+                            f"Ожидаемые результаты темы: {role.get('topic_expected_outcomes') or '—'}",
+                            f"Направление: {role.get('direction') or '—'}",
+                            f"Автор: {role.get('author_name') or '—'}",
+                            f"role_id: {role.get('role_id')}",
+                        ]
+                    )
+                )
+
+            return (
+                "Студент:\n"
+                + "\n".join(student_lines)
+                + "\n\nДоступные роли (выбирать только из них):\n"
+                + ("\n\n".join(role_lines) if role_lines else "—")
+            )
+
+        human_payload = _format_human_prompt(payload)
         schema = {
             "type": "object",
             "properties": {
@@ -249,12 +288,16 @@ class MatchingLLMClient:
                 f"Выбери {expected_count} ролей для студента и добавь пояснения."
             ),
             system_prompt=(
-                "Ты ассистент, который помогает студенту подобрать роли."
-                f" Отвечай на русском и возвращай {expected_count} элементов через функцию."
+                "Ты ассистент, который помогает студенту подобрать роли. Отвечай на русском."
+                f" Возвращай ровно {expected_count} элементов через функцию rank_roles."
+                " Выбирай только из переданных ролей, не придумывай новые названия."
             ),
             user_prompt=(
-                "Входные данные (JSON):\n"
-                f"{payload_json}\n\n"
+                "Ниже данные о студенте и список доступных ролей. Выбери ровно "
+                f"{expected_count} лучших ролей только из списка и верни их через функцию rank_roles."
+                " В ответе используй role_id из списка и номер num, не добавляй других ролей."
+                " Коротко обоснуй каждую роль.\n\n"
+                f"{human_payload}\n\n"
                 f"Вызови функцию rank_roles и передай {expected_count} лучших вариантов."
             ),
             schema=schema,

@@ -250,9 +250,13 @@ def build_roles_for_student_payload(
                 "num": idx,
                 "role_id": role.get("id"),
                 "role_name": role.get("name"),
+                "role_description": role.get("description"),
                 "role_required_skills": role.get("required_skills"),
                 "topic_id": role.get("topic_id"),
                 "topic_title": role.get("topic_title"),
+                "topic_description": role.get("topic_description"),
+                "topic_required_skills": role.get("topic_required_skills"),
+                "topic_expected_outcomes": role.get("topic_expected_outcomes"),
                 "direction": role.get("direction"),
                 "author_name": role.get("author_name"),
             }

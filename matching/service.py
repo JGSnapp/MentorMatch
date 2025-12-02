@@ -393,9 +393,9 @@ def handle_match_student(
     if not roles:
         return {"status": "ok", "student_user_id": student_user_id, "items": []}
 
-    payload_json = dumps_payload(build_roles_for_student_payload(student, roles))
+    payload = build_roles_for_student_payload(student, roles)
     llm = _pick_llm(llm_client)
-    ranked = (llm.rank_roles(payload_json) if llm else None) or _fallback_top5_roles(roles)
+    ranked = (llm.rank_roles(payload) if llm else None) or _fallback_top5_roles(roles)
 
     by_id = {role.get("id"): role for role in roles}
     items: List[Dict[str, Any]] = []

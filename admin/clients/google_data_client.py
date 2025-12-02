@@ -14,7 +14,7 @@ def _post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Отправляет POST-запрос в сервис Google Data и возвращает ответ как JSON."""
     url = f"{GOOGLE_DATA_SERVICE_URL.rstrip('/')}{path}"
     try:
-        response = httpx.post(url, json=payload, timeout=120)
+        response = httpx.post(url, json=payload, timeout=300)
         response.raise_for_status()
         return response.json()
     except Exception as exc:

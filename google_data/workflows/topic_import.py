@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
@@ -14,6 +15,8 @@ from ..services.matching_client import (
     refresh_role_embedding,
 )
 logger = logging.getLogger(__name__)
+
+PARSE_CV = (os.getenv("PARSE_CV") or "true").strip().lower() not in ("0", "false", "no")
 
 MEMBER_ROLE_NAME = '%member'
 MEMBER_ROLE_DESCRIPTION = (
@@ -152,12 +155,15 @@ def import_students(
     inserted_users = 0
     inserted_profiles = 0
     student_refresh_queue: Set[int] = set()
+    rows_list = list(rows)
+    logger.info("Importing students: total rows=%s", len(rows_list))
 
     with conn.cursor() as cur:
-        for idx, row in enumerate(rows):
+        for idx, row in enumerate(rows_list):
             full_name = (row.get("full_name") or "").strip()
             email = (row.get("email") or "").strip()
-            if not (full_name or email):
+            if not email:
+                logger.debug("Row %s skipped: missing email (name=%s)", idx + 1, full_name)
                 continue
             needs_student_refresh = False
 
@@ -168,8 +174,10 @@ def import_students(
                     (email,),
                 )
                 existing = cur.fetchone()
-            if existing:
+            existing_user = bool(existing)
+            if existing_user:
                 user_id = existing[0]
+                logger.debug("Row %s: existing student id=%s email=%s", idx + 1, user_id, email)
             else:
                 cur.execute(
                     """
@@ -182,6 +190,7 @@ def import_students(
                 user_id = cur.fetchone()[0]
                 inserted_users += 1
                 needs_student_refresh = True
+                logger.debug("Row %s: inserted new student id=%s email=%s", idx + 1, user_id, email)
 
             updates: List[str] = []
             params: List[Any] = []
@@ -194,7 +203,7 @@ def import_students(
             if row.get("consent_personal") is not None:
                 updates.append("consent_personal=%s")
                 params.append(row["consent_personal"])
-            if updates:
+            if updates and not existing_user:
                 params.append(user_id)
                 cur.execute(
                     f"UPDATE users SET {', '.join(updates)}, updated_at=now() WHERE id=%s",
@@ -205,66 +214,79 @@ def import_students(
             skills_have = _comma_join(row.get("hard_skills_have"))
             skills_want = _comma_join(row.get("hard_skills_want"))
             interests = _comma_join(row.get("interests"))
-            cv_value = process_cv(conn, user_id, row.get("cv"))
+            if PARSE_CV:
+                cv_value = process_cv(conn, user_id, row.get("cv"))
+            else:
+                cv_value = row.get("cv")
+                if row.get("cv"):
+                    logger.debug("Row %s: CV parsing disabled, skipped download for user_id=%s", idx + 1, user_id)
             theme_name = _normalize_theme(row.get('requested_theme') or row.get('thematic_choice'))
             requested_roles = _normalize_roles(row.get('requested_roles'))
             if not requested_roles and row.get('team_role'):
                 requested_roles = _normalize_roles(_split_roles_raw(row.get('team_role')))
 
-            profile_values = {
-                'submitted_at': row.get('timestamp'),
-                'isu_number': row.get('isu_number'),
-                'subdivision': row.get('subdivision'),
-                'direction': row.get('direction'),
-                'education_program': row.get('education_program'),
-                'status': row.get('status'),
-                'course': row.get('course'),
-                'group_number': row.get('group_number'),
-                'phone': row.get('phone'),
-                'skills': skills_have,
-                'skills_to_learn': skills_want,
-                'interests': interests,
-                'dislikes': row.get('dislikes'),
-                'commercial_experience': row.get('commercial_experience'),
-                'noncommercial_experience': row.get('noncommercial_experience'),
-                'portfolio': row.get('portfolio'),
-                'achievements': row.get('achievements'),
-                'hobbies': row.get('hobbies'),
-                'cv': cv_value,
-                'customer_discovery_level': row.get('customer_discovery_level'),
-                'sales_level': row.get('sales_level'),
-                'tech_execution_level': row.get('tech_execution_level'),
-                'data_analytics_level': row.get('data_analytics_level'),
-                'marketing_design_level': row.get('marketing_design_level'),
-                'finance_business_level': row.get('finance_business_level'),
-                'team_leadership_level': row.get('team_leadership_level'),
-                'apply_master': row.get('apply_master'),
-                'hours_per_week': row.get('hours_per_week'),
-                'thematic_choice': None,
-                'team_role': None,
-                'plan_for_lab': row.get('plan_for_lab'),
-                'motivation_letter': row.get('motivation_letter'),
-                'police_clearance': row.get('police_clearance'),
-                'dev_track': row.get('dev_track'),
-                'science_track': row.get('science_track'),
-                'startup_track': row.get('startup_track'),
-            }
+            if not existing_user:
+                profile_values = {
+                    'submitted_at': row.get('timestamp'),
+                    'isu_number': row.get('isu_number'),
+                    'subdivision': row.get('subdivision'),
+                    'direction': row.get('direction'),
+                    'education_program': row.get('education_program'),
+                    'status': row.get('status'),
+                    'course': row.get('course'),
+                    'group_number': row.get('group_number'),
+                    'phone': row.get('phone'),
+                    'skills': skills_have,
+                    'skills_to_learn': skills_want,
+                    'interests': interests,
+                    'dislikes': row.get('dislikes'),
+                    'commercial_experience': row.get('commercial_experience'),
+                    'noncommercial_experience': row.get('noncommercial_experience'),
+                    'portfolio': row.get('portfolio'),
+                    'achievements': row.get('achievements'),
+                    'hobbies': row.get('hobbies'),
+                    'cv': cv_value,
+                    'customer_discovery_level': row.get('customer_discovery_level'),
+                    'sales_level': row.get('sales_level'),
+                    'tech_execution_level': row.get('tech_execution_level'),
+                    'data_analytics_level': row.get('data_analytics_level'),
+                    'marketing_design_level': row.get('marketing_design_level'),
+                    'finance_business_level': row.get('finance_business_level'),
+                    'team_leadership_level': row.get('team_leadership_level'),
+                    'apply_master': row.get('apply_master'),
+                    'hours_per_week': row.get('hours_per_week'),
+                    'thematic_choice': None,
+                    'team_role': None,
+                    'plan_for_lab': row.get('plan_for_lab'),
+                    'motivation_letter': row.get('motivation_letter'),
+                    'police_clearance': row.get('police_clearance'),
+                    'dev_track': row.get('dev_track'),
+                    'science_track': row.get('science_track'),
+                    'startup_track': row.get('startup_track'),
+                }
 
-            columns = list(profile_values.keys())
-            values = [profile_values[col] for col in columns]
-            placeholders = ', '.join(['%s'] * len(columns))
-            updates_sql = ', '.join(f"{col}=EXCLUDED.{col}" for col in columns)
-            cur.execute(
-                f"""
-                INSERT INTO student_profiles(user_id, {', '.join(columns)})
-                VALUES (%s, {placeholders})
-                ON CONFLICT (user_id) DO UPDATE SET {updates_sql}
-                """,
-                (user_id, *values),
-            )
-            needs_student_refresh = True
-            inserted_profiles += 1
-            if theme_name and requested_roles:
+                columns = list(profile_values.keys())
+                values = [profile_values[col] for col in columns]
+                placeholders = ', '.join(['%s'] * len(columns))
+                updates_sql = ', '.join(f"{col}=EXCLUDED.{col}" for col in columns)
+                cur.execute(
+                    f"""
+                    INSERT INTO student_profiles(user_id, {', '.join(columns)})
+                    VALUES (%s, {placeholders})
+                    ON CONFLICT (user_id) DO UPDATE SET {updates_sql}
+                    """,
+                    (user_id, *values),
+                )
+                needs_student_refresh = True
+                inserted_profiles += 1
+            allow_roles_insert = True
+            if existing_user and theme_name:
+                cur.execute(
+                    "SELECT 1 FROM requested_roles WHERE student_id=%s AND theme_name=%s LIMIT 1",
+                    (user_id, theme_name),
+                )
+                allow_roles_insert = cur.fetchone() is None
+            if theme_name and requested_roles and allow_roles_insert:
                 for role_name in requested_roles:
                     cur.execute(
                         """
@@ -276,6 +298,12 @@ def import_students(
                     )
             if needs_student_refresh:
                 student_refresh_queue.add(user_id)
+    logger.info(
+        "Import students completed: new_users=%s, profiles=%s, queued_refresh=%s",
+        inserted_users,
+        inserted_profiles,
+        len(student_refresh_queue),
+    )
 
     conn.commit()
     for student_id in student_refresh_queue:
@@ -325,7 +353,8 @@ def import_supervisors(
                     (full_name,),
                 )
             existing = cur.fetchone()
-            if existing:
+            existing_user = bool(existing)
+            if existing_user:
                 user_id = existing[0]
             else:
                 cur.execute(
@@ -348,7 +377,7 @@ def import_supervisors(
                 if tg_link:
                     updates.append("username=%s")
                     params.append(tg_link)
-            if updates:
+            if updates and not existing_user:
                 params.append(user_id)
                 cur.execute(
                     f"UPDATE users SET {', '.join(updates)}, updated_at=now() WHERE id=%s",
@@ -361,26 +390,27 @@ def import_supervisors(
             capacity_val = None
             requirements_val = row.get("required_skills")
 
-            if profile_exists:
-                cur.execute(
-                    """
-                    UPDATE supervisor_profiles
-                    SET capacity=%s, requirements=%s
-                    WHERE user_id=%s
-                    """,
-                    (capacity_val, requirements_val, user_id),
-                )
-                needs_supervisor_refresh = True
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (user_id, None, None, capacity_val, None, requirements_val),
-                )
-                needs_supervisor_refresh = True
-            upserted_profiles += 1
+            if not existing_user:
+                if profile_exists:
+                    cur.execute(
+                        """
+                        UPDATE supervisor_profiles
+                        SET capacity=%s, requirements=%s
+                        WHERE user_id=%s
+                        """,
+                        (capacity_val, requirements_val, user_id),
+                    )
+                    needs_supervisor_refresh = True
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO supervisor_profiles(user_id, position, degree, capacity, interests, requirements)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (user_id, None, None, capacity_val, None, requirements_val),
+                    )
+                    needs_supervisor_refresh = True
+                upserted_profiles += 1
 
             title = (row.get("topic_title") or "").strip()
             resources = (row.get("resources") or "").strip()
@@ -397,26 +427,9 @@ def import_supervisors(
                     (user_id, title),
                 )
                 topic_row = cur.fetchone()
-                if topic_row:
-                    topic_id = topic_row[0]
-                    cur.execute(
-                        """
-                        UPDATE topics
-                        SET description=%s,
-                            expected_outcomes=%s,
-                            required_skills=%s,
-                            seeking_role='student',
-                            updated_at=now()
-                        WHERE id=%s
-                        """,
-                        (
-                            description_val,
-                            row.get("expected_outcomes"),
-                            row.get("required_skills"),
-                            topic_id,
-                        ),
-                    )
-                else:
+                topic_exists = bool(topic_row)
+                topic_id = topic_row[0] if topic_row else None
+                if not topic_exists:
                     cur.execute(
                         """
                         INSERT INTO topics(author_user_id, title, description, expected_outcomes,
@@ -436,39 +449,43 @@ def import_supervisors(
                     inserted_topic_row = cur.fetchone()
                     topic_id = inserted_topic_row[0]
                     inserted_topics += 1
-                topic_refresh_queue.add(topic_id)
-                member_role_id = _ensure_member_role(cur, topic_id)
-                if member_role_id:
-                    role_refresh_queue.add(member_role_id)
+                    if not existing_user:
+                        topic_refresh_queue.add(topic_id)
+                    member_role_id = _ensure_member_role(cur, topic_id)
+                    if member_role_id and not existing_user:
+                        role_refresh_queue.add(member_role_id)
 
-                roles = _normalize_roles(row.get("required_roles"))
-                for role_name in roles:
-                    cur.execute(
-                        "SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1",
-                        (topic_id, role_name),
-                    )
-                    role_row = cur.fetchone()
-                    if role_row:
-                        role_refresh_queue.add(role_row[0])
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, now(), now())
-                        RETURNING id
-                        """,
-                        (
-                            topic_id,
-                            role_name,
-                            None,
-                            row.get("required_skills"),
-                            None,
-                        ),
-                    )
-                    role_inserted = cur.fetchone()
-                    if role_inserted:
-                        inserted_roles += 1
-                        role_refresh_queue.add(role_inserted[0])
+                    roles = _normalize_roles(row.get("required_roles"))
+                    for role_name in roles:
+                        cur.execute(
+                            "SELECT id FROM roles WHERE topic_id=%s AND name=%s LIMIT 1",
+                            (topic_id, role_name),
+                        )
+                        role_row = cur.fetchone()
+                        if role_row:
+                            if not existing_user:
+                                role_refresh_queue.add(role_row[0])
+                            continue
+                        cur.execute(
+                            """
+                            INSERT INTO roles(topic_id, name, description, required_skills, capacity, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, now(), now())
+                            RETURNING id
+                            """,
+                            (
+                                topic_id,
+                                role_name,
+                                None,
+                                row.get("required_skills"),
+                                None,
+                            ),
+                        )
+                        role_inserted = cur.fetchone()
+                        if role_inserted:
+                            inserted_roles += 1
+                            if not existing_user:
+                                role_refresh_queue.add(role_inserted[0])
+                # existing_user with existing topic: do nothing (no updates/roles)
             if needs_supervisor_refresh:
                 supervisor_refresh_queue.add(user_id)
 
