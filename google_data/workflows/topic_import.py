@@ -53,7 +53,7 @@ def normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
     value = str(raw).strip()
     if value.startswith("@"):
         value = value[1:]
-    if value.lower().startswith(("http://t.me/", "https://t.me/", "http://telegram.me/", "https://telegram.me/")):
+    if value.lower().startswith(("https://t.me/", "http://telegram.me/", "https://telegram.me/")):
         return value
     match = re.search(r"(?:https?://)?t(?:elegram)?\.me/([A-Za-z0-9_]+)", value)
     if match:
