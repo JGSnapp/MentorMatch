@@ -50,14 +50,16 @@ def normalize_telegram_link(raw: Optional[str]) -> Optional[str]:
     """Преобразует ввод пользователя в каноническую ссылку Telegram."""
     if not raw:
         return None
+
     value = str(raw).strip()
+    # @username -> username
     if value.startswith("@"):
         value = value[1:]
-    if value.lower().startswith(("https://t.me/", "http://telegram.me/", "https://telegram.me/")):
-        return value
-    match = re.search(r"(?:https?://)?t(?:elegram)?\.me/([A-Za-z0-9_]+)", value)
+    # Всегда пытаемся вытащить username из любой ссылки и привести к https
+    match = re.search(r"(?:https?://)?t(?:elegram)?\.me/([A-Za-z0-9_]+)", value, re.IGNORECASE)
     if match:
         return f"https://t.me/{match.group(1)}"
+    # Если это не ссылка, а просто текст вида AntonTi1, чистим всё лишнее
     username = re.sub(r"[^A-Za-z0-9_]", "", value)
     return f"https://t.me/{username}" if username else None
 
